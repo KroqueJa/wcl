@@ -1,6 +1,5 @@
 #include <iostream>
 #include <fstream>
-#include <cstdlib>
 #include <immintrin.h>
 #include <stdint.h>
 #include <sys/stat.h>
@@ -8,10 +7,6 @@
 #include <thread>
 #include <mutex>
 #include <unordered_set>
-#include <atomic>
-#include <algorithm>
-#include <execution>
-
 
 
 // Struct to keep file data ptr and file size together
