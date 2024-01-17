@@ -1,0 +1,30 @@
+BasedOnStyle: Google
+
+AlignAfterOpenBracket: BlockIndent
+AllowShortBlocksOnASingleLine: Always
+AllowShortFunctionsOnASingleLine: Inline
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterEnum: true
+  AfterCaseLabel: true
+  AfterClass: true
+  AfterStruct: true
+  AfterFunction: true
+BreakConstructorInitializers: BeforeComma
+Cpp11BracedListStyle: false
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: Never
+IndentCaseBlocks: false
+IndentCaseLabels: true
+IndentWidth: 2
+ReferenceAlignment: Left
+PointerAlignment: Left
+SpaceBeforeCaseColon: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: false
+SpacesInAngles: Leave
+TabWidth: 2
+SpaceAfterTemplateKeyword: true
+SpacesInParentheses: true
+SpaceBeforeParens: ControlStatements
