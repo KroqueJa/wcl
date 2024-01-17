@@ -1,6 +1,6 @@
 # WCL
 
-Have you ever used `wc -l`? I have. If you are running said command on a processor modern enough that `wc` can't reasonably support some hardware features of your CPU, you might use `wcl` instead - it's faster.
+Have you ever used `wc -l`? I have. If you are running said command on a processor modern enough to support vectorized instructions and multithreading (`wc` does those things too), `wcl` is faster.
 
 Is it "blazingly fast"? ~~Probably not yet~~ If it works the way it seems to work... yes! In my preliminary testing (on one system) it is
 
