@@ -1,20 +1,11 @@
 #include <iostream>
-#include <fstream>
 #include <immintrin.h>
-#include <stdint.h>
-#include <sys/stat.h>
 #include <vector>
 #include <thread>
 #include <mutex>
 #include <unordered_set>
 #include <fcntl.h>
 #include <unistd.h>
-
-// Struct to keep file data ptr and file size together
-struct FileData {
-  size_t fileSize;
-  char* contents;
-};
 
 // Struct to keep the results clean
 struct Result {
