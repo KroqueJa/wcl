@@ -1,2 +1,3 @@
 testdata/**
 wcl
+wcl_avx
