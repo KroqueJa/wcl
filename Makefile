@@ -7,10 +7,6 @@ SRC = wcl.cpp
 
 all: $(TARGET)
 
-avx:
-	$(CXX) $(CXXFLAGS) -o $(TARGET)_avx wcl_avx.cpp
-
-
 $(TARGET): $(SRC)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SRC)
 

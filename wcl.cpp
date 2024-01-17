@@ -7,7 +7,8 @@
 #include <thread>
 #include <mutex>
 #include <unordered_set>
-
+#include <fcntl.h>
+#include <unistd.h>
 
 // Struct to keep file data ptr and file size together
 struct FileData {
@@ -28,68 +29,11 @@ std::mutex outputMutex;
 std::unordered_set<std::string> fileSet;
 std::vector<Result> output;
 
-size_t processBuffer(char* buf, size_t bufferSize) {
-  __m128i vec_target = _mm_set1_epi8('\n');
-
-  size_t sum = 0;
-  char* tmp = buf;
-  size_t bytesRead = 0;
-
-  // Process in chunks of 16 bytes
-  while (bytesRead < bufferSize && ((uintptr_t)tmp % 16 != 0)) {
-    if (*tmp == '\n') ++sum;
-    ++tmp;
-    ++bytesRead;
-  }
-
-  __m128i chunk, result;
-  int mask;
-  while (bytesRead + 15 < bufferSize) {             // Process 16 bytes at a time
-    chunk = _mm_loadu_si128((__m128i*)tmp);         // Load 16 bytes
-    result = _mm_cmpeq_epi8(chunk, vec_target);     // Compare all 16 bytes with target
-    mask = _mm_movemask_epi8(result);               // Get a mask of comparison results
-    sum += _mm_popcnt_u32(mask);                    // Count the number of 1 bits in the mask
-    tmp += 16;
-    bytesRead += 16;
-  }
-
-  // Process remaining characters
-  while (bytesRead < bufferSize) {
-
-    if (*tmp == '\n') ++sum;
-    ++tmp;
-    ++bytesRead;
-  }
-
-  return sum;
-}
-
-FileData readFileIntoBuffer(const std::string& filename) {
-  struct stat st;
-  if (stat(filename.c_str(), &st) != 0) {
-    std::cerr << "Error getting file size: " << filename << '\n';
-    return {0, nullptr}; // Return empty FileData on error
-  }
-
-  size_t bufferSize = st.st_size;
-  char* buffer = static_cast<char*>(malloc(bufferSize));
-  if (buffer == nullptr) {
-    std::cerr << "Memory allocation failed." << '\n';
-    return {0, nullptr}; // Return empty FileData on memory allocation failure
-  }
-
-  std::ifstream file(filename, std::ios::binary);
-  if (!file.is_open()) {
-    std::cerr << "Error opening file: " << filename << '\n';
-    free(buffer);
-    return {0, nullptr}; // Return empty FileData on file open failure
-  }
-
-  file.read(buffer, bufferSize);
-  file.close();
-
-  return {bufferSize, buffer}; // Return filled FileData
-}
+// TODO: investigate parallel accumulators
+// TODO: Process 64 bytes at a time
+// TODO: Horizontal summation with _mm256_sad_epu8
+// TODO: Process file descriptor directly
+// TODO: Investigate allocating large buffers (one per thread) directly instead of dynamically checking file sizes
 
 void processFile() {
     while (true) {
@@ -97,55 +41,94 @@ void processFile() {
 
         {
             std::lock_guard<std::mutex> guard(fileSetMutex);
-            if (fileSet.empty()) {
-                return; // No more files to process
-            }
+            if (fileSet.empty()) return;
             filename = *fileSet.begin();
             fileSet.erase(fileSet.begin());
         }
 
-        FileData fileData = readFileIntoBuffer(filename);
-        if (fileData.contents) {
-            size_t count = processBuffer(fileData.contents, fileData.fileSize);
-            free(fileData.contents);
+        int fd = open(filename.c_str(), O_RDONLY);
+        if (fd < 0) {
+            std::cerr << "Error opening file: " << filename << '\n';
+            exit(1); // TODO: real error handling
+        }
 
+        const size_t bufferSize = 163840;
+        char buffer[bufferSize];
+        ssize_t bytesRead;
+
+        size_t totalLines = 0;
+        while ((bytesRead = read(fd, buffer, bufferSize)) > 0) {
+            __m256i vec_target = _mm256_set1_epi8('\n');
+            size_t lines = 0;
+            char* tmp = buffer;
+            size_t processedBytes = 0;
+
+            // Process buffer
+            // Align to 32-byte boundary
+            while (processedBytes < bytesRead && ((uintptr_t)tmp % 32 != 0)) {
+                if (*tmp == '\n') ++lines;
+                ++tmp;
+                ++processedBytes;
+            }
+
+            __m256i chunk, result;
+            int mask;
+            while (processedBytes + 31 < bytesRead) { // Process 32 bytes at a time
+                chunk = _mm256_loadu_si256((__m256i*)tmp);
+                result = _mm256_cmpeq_epi8(chunk, vec_target);
+                mask = _mm256_movemask_epi8(result);
+                lines += _mm_popcnt_u32(mask);
+                tmp += 32;
+                processedBytes += 32;
+            }
+
+            // Process remaining characters
+            while (processedBytes < bytesRead) {
+                if (*tmp == '\n') ++lines;
+                ++tmp;
+                ++processedBytes;
+            }
+
+            totalLines += lines;
+        }
+
+        close(fd);
+
+        {
             std::lock_guard<std::mutex> outputGuard(outputMutex);
-            output.push_back({std::to_string(count) + " " + filename, count});
-        } else {
-            std::cerr << "Could not process file " << filename << '\n';
-            // Handle error appropriately
+            output.push_back({std::to_string(totalLines) + " " + filename, totalLines});
         }
     }
 }
 
 int main(int argc, char** argv) {
-    // Populate fileSet with input filenames
-    for (int i = 1; i < argc; ++i) {
-        fileSet.insert(argv[i]);
-    }
+  // Populate fileSet with input filenames
+  for (int i = 1; i < argc; ++i) {
+    fileSet.insert(argv[i]);
+  }
 
-    unsigned numThreads = std::thread::hardware_concurrency();
-    std::vector<std::thread> threads(numThreads);
+  unsigned numThreads = std::thread::hardware_concurrency();
+  std::vector<std::thread> threads(numThreads);
 
-    // Start threads
-    for (unsigned i = 0; i < numThreads; ++i) {
-        threads[i] = std::thread(processFile);
-    }
+  // Start threads
+  for (unsigned i = 0; i < numThreads; ++i) {
+    threads[i] = std::thread(processFile);
+  }
 
-    // Join threads
-    for (auto& thread : threads) {
-        thread.join();
-    }
+  // Join threads
+  for (auto& thread : threads) {
+    thread.join();
+  }
 
-    size_t total = 0;
+  size_t total = 0;
 
-    // Print results
-    for (const auto& result : output) {
-        total += result.lineCount;
-        std::cout << result.str << '\n';
-    }
+  // Print results
+  for (const auto& result : output) {
+    total += result.lineCount;
+    if (argc != 2) std::cout << result.str << '\n';
+  }
 
-    std::cout << total << std::endl;
+  std::cout << total << std::endl;
 
-    return 0;
+  return 0;
 }
