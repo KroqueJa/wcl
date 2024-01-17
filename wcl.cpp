@@ -20,12 +20,6 @@ std::mutex outputMutex;
 std::unordered_set<std::string> fileSet;
 std::vector<Result> output;
 
-// TODO: investigate parallel accumulators
-// TODO: Process 64 bytes at a time
-// TODO: Horizontal summation with _mm256_sad_epu8
-// TODO: Process file descriptor directly
-// TODO: Investigate allocating large buffers (one per thread) directly instead of dynamically checking file sizes
-
 void processFile() {
     while (true) {
         std::string filename;
