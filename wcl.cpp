@@ -1,5 +1,6 @@
 #include <fcntl.h>
 #include <immintrin.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <iostream>
@@ -15,6 +16,9 @@ struct Result
   size_t lineCount;
 };
 
+// Flags
+bool countBytes = false;
+
 // Mutexes
 std::mutex fileSetMutex;
 std::mutex outputMutex;
@@ -24,6 +28,44 @@ std::unordered_set<std::string> fileSet;
 
 // Vector in which to store results
 std::vector<Result> output;
+
+void processFileSize()
+{
+  while ( true ) {
+    // ---- Get a file name from the unordered set ----
+    std::string filename;
+
+    {
+      std::lock_guard<std::mutex> guard( fileSetMutex );
+      if ( fileSet.empty() ) return;
+      filename = *fileSet.begin();
+      fileSet.erase( fileSet.begin() );
+    }
+
+    // ---- Open a file (or read STDIN) ----
+    int fd;
+    if ( filename.empty() ) {  // If filename is empty, read from STDIN
+      fd = 0;
+    } else {
+      // Get file descriptor
+      fd = open( filename.c_str(), O_RDONLY );
+      if ( fd < 0 ) {
+        std::cerr << "Error opening file: " << filename << '\n';
+        return;
+      }
+    }
+
+    struct stat stat_buf;
+    int rc = stat( filename.c_str(), &stat_buf );
+    size_t fileSize = rc == 0 ? stat_buf.st_size : 0;
+
+    {
+      std::lock_guard<std::mutex> outputGuard( outputMutex );
+      output.push_back( { std::to_string( fileSize ) + " " + filename,
+                          fileSize } );
+    }
+  }
+}
 
 // Function to process a file path and put a `Result` struct into the `output`
 // vector
@@ -49,14 +91,14 @@ void processFile()
       fd = open( filename.c_str(), O_RDONLY );
       if ( fd < 0 ) {
         std::cerr << "Error opening file: " << filename << '\n';
-        exit( 1 );  // TODO: real error handling
+        return;
       }
     }
 
     // Define a buffer for chunks of the file
-    const size_t bufferSize = 163840; // Size of the chunk buffer
-    char buffer[bufferSize];          // The buffer itself
-    ssize_t bytesRead;                // Track how many bytes have been read
+    const size_t bufferSize = 163840;  // Size of the chunk buffer
+    char buffer[bufferSize];           // The buffer itself
+    ssize_t bytesRead;                 // Track how many bytes have been read
 
     __m256i chunk1, chunk2, result1, result2;
     int mask1, mask2;  // Bitmasks to hold the comparison results
@@ -83,14 +125,10 @@ void processFile()
         chunk2 = _mm256_loadu_si256( (__m256i*)( tmp + 32 ) );
 
         // Compare each byte in the first chunk
-        result1 = _mm256_cmpeq_epi8(
-            chunk1, vec_target
-        );
+        result1 = _mm256_cmpeq_epi8( chunk1, vec_target );
 
         // Compare each byte in the second chunk
-        result2 = _mm256_cmpeq_epi8(
-            chunk2, vec_target
-        );
+        result2 = _mm256_cmpeq_epi8( chunk2, vec_target );
         // Create masks for chunks
         mask1 = _mm256_movemask_epi8( result1 );
         mask2 = _mm256_movemask_epi8( result2 );
@@ -122,37 +160,61 @@ void processFile()
     }
   }
 }
+void processStdinBytes()
+{
+  size_t totalBytes = 0;
+  const size_t bufferSize = 16384;
+  char buffer[bufferSize];
+
+  ssize_t bytesRead;
+  while ( ( bytesRead = read( 0, buffer, bufferSize ) ) > 0 ) {
+    totalBytes += bytesRead;
+  }
+
+  std::cout << totalBytes << std::endl;
+}
 
 int main( int argc, char** argv )
 {
-  if ( argc == 1 ) {
-    // No arguments provided, read from STDIN
+  for ( int i = 1; i < argc; ++i ) {
+    if ( std::string( argv[i] ) == "-b" ) {
+      countBytes = true;
+      continue;
+    }
+    fileSet.insert( argv[i] );
+  }
 
-    // An empty string is used as a placeholder to signal reading from STDIN
-    fileSet.insert( "" );
-    processFile();
-    std::cout << output[0].lineCount << std::endl;
+  if ( argc == 1 || ( argc == 2 && countBytes ) ) {
+    // No arguments provided or only '-b', read from STDIN
+    if ( countBytes ) {
+      // Call a function to read from STDIN and count bytes
+      processStdinBytes();
+    } else {
+      // Call the existing function to count lines from STDIN
+      fileSet.insert( "" );
+      processFile();
+    }
   } else {
-    // Populate fileSet with input filenames
-    for ( int i = 1; i < argc; ++i ) fileSet.insert( argv[i] );
     unsigned numThreads = std::thread::hardware_concurrency();
     std::vector<std::thread> threads( numThreads );
 
+    // Select function based on countBytes flag
+    auto processFunction = countBytes ? processFileSize : processFile;
+
     // Start threads
-    for ( unsigned i = 0; i < numThreads; ++i )
-      threads[i] = std::thread( processFile );
+    for ( unsigned i = 0; i < numThreads; ++i ) {
+      threads[i] = std::thread( processFunction );
+    }
 
     // Join threads
     for ( auto& thread: threads ) thread.join();
 
-    size_t total = 0;
-
     // Print results
+    size_t total = 0;
     for ( const auto& result: output ) {
       total += result.lineCount;
       if ( argc > 2 ) std::cout << result.str << '\n';
     }
-
     std::cout << total << std::endl;
   }
 
