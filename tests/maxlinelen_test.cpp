@@ -128,6 +128,67 @@ TEST( MaxLineLen, FuzzAgainstReference )
 }
 
 // ---------------------------------------------------------------------------
+// Boundary cases for the 4-wide (128-byte) outer iteration. The 4x32 path's
+// hot loop processes 128 bytes per iteration with a single newline test
+// across four 32-byte sub-blocks; these tests pin down each sub-block
+// position and the trailing 0..3 32-byte blocks so the rewrite's hit and
+// tail paths can't silently regress. They pass against the baseline.
+// ---------------------------------------------------------------------------
+TEST( MaxLineLen, CleanWindow128NoNewline )
+{
+  // Two full 128-byte clean iterations + 0-byte tail. No newline anywhere ->
+  // wc -L is 0 (no terminated line).
+  const std::string s( 256, 'x' );
+  EXPECT_EQ( maxLineLenStr( s ), 0u );
+}
+
+TEST( MaxLineLen, CleanWindow128ThenTerminated )
+{
+  // 200 'x' bytes then newline -> one terminated line of length 200 spanning
+  // the first 128-byte window and into the trailing 32-byte tail.
+  const std::string s = std::string( 200, 'x' ) + "\n";
+  EXPECT_EQ( maxLineLenStr( s ), 200u );
+}
+
+TEST( MaxLineLen, NewlineInEachSubBlockPosition )
+{
+  // For each sub-block offset (0, 32, 64, 96) inside a 128-byte window: the
+  // hit path has to identify and process exactly the right 32-byte block.
+  for ( size_t pos: { size_t( 0 ), size_t( 32 ), size_t( 64 ), size_t( 96 ) } ) {
+    std::string s( 128, 'x' );
+    s[pos] = '\n';
+    // Longest terminated line is the prefix [0, pos).
+    const usize expected = pos;
+    EXPECT_EQ( maxLineLenStr( s ), expected ) << "newline at pos=" << pos;
+  }
+}
+
+TEST( MaxLineLen, TrailingTailOf1To3Blocks )
+{
+  // 128 clean + N*32 clean + "\n" for N in {1,2,3}: exercises 32-byte tail
+  // loop after the 4-wide outer loop runs once.
+  for ( size_t n: { size_t( 1 ), size_t( 2 ), size_t( 3 ) } ) {
+    const size_t lineLen = 128 + n * 32;
+    const std::string s = std::string( lineLen, 'x' ) + "\n";
+    EXPECT_EQ( maxLineLenStr( s ), lineLen ) << "n=" << n;
+  }
+}
+
+TEST( MaxLineLen, CharModeCleanWindow128WithContBytes )
+{
+  // Character mode: a clean 128-byte window made of two-byte UTF-8 (0xC3,
+  // 0xA9 = é) followed by a newline. 64 characters in 128 bytes; wc -L
+  // counts characters here.
+  std::string s;
+  s.reserve( 130 );
+  for ( int i = 0; i < 64; ++i ) s.append( "\xC3\xA9" );  // 64 'é'
+  s.push_back( '\n' );
+  LineScan ls;
+  maxLineLen( s.data(), s.size(), ls, /*countChars=*/true );
+  EXPECT_EQ( ls.maxComplete, 64u );
+}
+
+// ---------------------------------------------------------------------------
 // Fused `-L -m` scanner: one pass must produce exactly what the two separate
 // passes would -- the char-mode longest line (maxLineLen with countChars) and
 // the character total (chars()). All three classify a byte as a continuation
@@ -142,6 +203,19 @@ TEST( MaxLineLenChars, MatchesSeparatePassesKnown )
   const auto [maxLine, chars] = fusedLineChars( s );
   EXPECT_EQ( maxLine, 11u );
   EXPECT_EQ( chars, 18u );
+  EXPECT_EQ( maxLine, charModeMaxLine( s ) );
+  EXPECT_EQ( chars, charsStr( s ) );
+}
+
+TEST( MaxLineLenChars, CleanWindow128MatchesSeparatePasses )
+{
+  // Same shape as the characterization test for byte mode, but verifies the
+  // fused -L -m path: 200 ASCII bytes + newline, plus a few multibyte chars
+  // before the newline so the contAcc lanes get exercised.
+  std::string s = std::string( 200, 'x' );
+  s.append( "\xC3\xA9\xC3\xA9" );  // 2 'é' (4 bytes, 2 chars)
+  s.push_back( '\n' );
+  const auto [maxLine, chars] = fusedLineChars( s );
   EXPECT_EQ( maxLine, charModeMaxLine( s ) );
   EXPECT_EQ( chars, charsStr( s ) );
 }
