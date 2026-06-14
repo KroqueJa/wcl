@@ -62,18 +62,57 @@ def build_word_pool(rng: random.Random, n: int, multibyte_fraction: float) -> li
     return pool
 
 
-def write_text(f, target: int, pool: list, rng: random.Random) -> int:
+def write_text(f, target: int, pool: list, rng: random.Random,
+               shape: str = "mixed") -> int:
     """Write newline-terminated word-lines to `f` until ~`target` bytes. Returns
     the number of characters produced (a close proxy for bytes; multibyte words
     make the file marginally larger). Termination counts the pending buffer too,
-    so it works for KiB-sized targets, not just multi-MiB ones."""
+    so it works for KiB-sized targets, not just multi-MiB ones.
+
+    `shape` selects the line-length distribution:
+      mixed       -- the historical default: 3-18 words/line, with 1% spikes
+                     of 80-200 words. Default so existing corpora are unchanged.
+      short       -- 40-80 byte lines, no spikes. Hit-fallback stress.
+      long        -- 2-8 KiB lines, no spikes. Clean-path stress.
+      single-line -- one line of `target` bytes ending in a newline. Pathological
+                     best-case ceiling."""
     buf = []
     pending = 0   # chars buffered since the last flush
     produced = 0  # total chars produced so far
     FLUSH = 1 << 20
+
+    if shape == "single-line":
+        # One long line; we still flush in chunks to keep RAM bounded. The
+        # final newline is appended after the body.
+        body_remaining = max(0, target - 1)
+        chunk_words = 256
+        while body_remaining > 0:
+            line = " ".join(rng.choices(pool, k=chunk_words))
+            # Strip a trailing space if the byte budget is tight; close enough.
+            data = line[:body_remaining] if len(line) > body_remaining else line + " "
+            buf.append(data)
+            pending += len(data)
+            produced += len(data)
+            body_remaining -= len(data)
+            if pending >= FLUSH:
+                f.write("".join(buf).encode("utf-8"))
+                buf = []
+                pending = 0
+        buf.append("\n")
+        produced += 1
+        f.write("".join(buf).encode("utf-8"))
+        return produced
+
     while produced < target:
-        # ~1% of lines are long (so -L is non-trivial); the rest are normal.
-        n_words = rng.randint(80, 200) if rng.random() < 0.01 else rng.randint(3, 18)
+        if shape == "short":
+            n_words = rng.randint(4, 10)        # ~40-80 bytes
+        elif shape == "long":
+            n_words = rng.randint(300, 1200)    # ~2-8 KiB
+        else:  # mixed -- historical default
+            # ~1% of lines are long (so -L is non-trivial); the rest are normal.
+            n_words = (rng.randint(80, 200)
+                       if rng.random() < 0.01
+                       else rng.randint(3, 18))
         line = " ".join(rng.choices(pool, k=n_words)) + "\n"
         buf.append(line)
         pending += len(line)
@@ -87,18 +126,19 @@ def write_text(f, target: int, pool: list, rng: random.Random) -> int:
     return produced
 
 
-def generate_single(out_path: str, size: int, seed: int, mbfrac: float) -> None:
+def generate_single(out_path: str, size: int, seed: int, mbfrac: float,
+                    shape: str = "mixed") -> None:
     rng = random.Random(seed)
     pool = build_word_pool(rng, 50_000, mbfrac)
     with open(out_path, "wb") as f:
-        write_text(f, size, pool, rng)
+        write_text(f, size, pool, rng, shape)
     actual = os.path.getsize(out_path)
     print(f"wrote {actual} bytes ({actual / 1024**2:.1f} MiB) to {out_path} "
-          f"(seed={seed})", file=sys.stderr)
+          f"(seed={seed}, shape={shape})", file=sys.stderr)
 
 
 def generate_many(out_dir: str, total: int, seed: int, mbfrac: float,
-                  min_file: int, max_file: int) -> None:
+                  min_file: int, max_file: int, shape: str = "mixed") -> None:
     rng = random.Random(seed)
     pool = build_word_pool(rng, 50_000, mbfrac)
     os.makedirs(out_dir, exist_ok=True)
@@ -112,12 +152,12 @@ def generate_many(out_dir: str, total: int, seed: int, mbfrac: float,
         fsize = max(min_file, min(max_file, fsize))
         path = os.path.join(out_dir, f"f{idx:07d}")
         with open(path, "wb") as f:
-            produced += write_text(f, fsize, pool, rng)
+            produced += write_text(f, fsize, pool, rng, shape)
         idx += 1
 
     print(f"wrote {idx} files (~{produced / 1024**2:.1f} MiB) to {out_dir}/ "
           f"with log-uniform sizes in [{min_file}, {max_file}] bytes "
-          f"(seed={seed})", file=sys.stderr)
+          f"(seed={seed}, shape={shape})", file=sys.stderr)
 
 
 def main() -> None:
@@ -136,15 +176,20 @@ def main() -> None:
                     help="--many: smallest file size (default 4KiB)")
     ap.add_argument("--max-file", default="1MiB",
                     help="--many: largest file size (default 1MiB)")
+    ap.add_argument("--line-length", default="mixed",
+                    choices=["short", "mixed", "long", "single-line"],
+                    help=("line-length distribution: short (40-80 B), mixed "
+                          "(default, historical 3-18 word lines with 1%% long "
+                          "spikes), long (2-8 KiB), single-line (one line)"))
     args = ap.parse_args()
 
     if args.many:
         generate_many(args.out, parse_size(args.size), args.seed,
                       args.multibyte_fraction, parse_size(args.min_file),
-                      parse_size(args.max_file))
+                      parse_size(args.max_file), args.line_length)
     else:
         generate_single(args.out, parse_size(args.size), args.seed,
-                        args.multibyte_fraction)
+                        args.multibyte_fraction, args.line_length)
 
 
 if __name__ == "__main__":
