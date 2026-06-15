@@ -19,6 +19,17 @@ not generated from commit messages.
   win is **2.36×** (20.5 ms vs 48.4 ms). LLC-load-misses on the headline
   workload fall from ~91k at 1 MiB to 668 at 256 KiB. Counts are
   unchanged.
+- `-L` (longest-line scan) benefits from the same L2-residency mechanism
+  Finding 6 documented, even though Finding 6's sweep didn't cover it.
+  Measured after the fact on the same native i7-8700 (warm 512 MiB
+  corpora, all 12 threads), main is faster than v0.1.0 on every
+  `-L`/`-L -m` cell. The bandwidth-bound long-lines corpus is the
+  cleanest mechanism win: `-L` on `long-512MiB` drops from 31.2 ms →
+  20.7 ms (**1.50×**), `-L -m` from 32.1 ms → 20.7 ms (**1.56×**). The
+  1 MiB buffer was spilling L2 and adding a second DRAM pass per byte
+  for the kernel; 256 KiB stays in L2 and removes it. Compute-bound
+  corpora keep a smaller but consistent gain (`big.txt` / `mixed-512MiB`
+  `-L` 1.16–1.18×, `-L -m` ~1.07×). Counts are unchanged.
 - `qwc` starts ~1.6× faster (2.6 → 1.6 ms on the measurement box, vs GNU wc's
   1.4 ms), which dominates short invocations like `qwc -c <file>` that never
   scan the file at all. Two changes: libstdc++/libgcc are now linked
