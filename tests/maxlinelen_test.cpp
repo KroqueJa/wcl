@@ -154,7 +154,8 @@ TEST( MaxLineLen, NewlineInEachSubBlockPosition )
 {
   // For each sub-block offset (0, 32, 64, 96) inside a 128-byte window: the
   // hit path has to identify and process exactly the right 32-byte block.
-  for ( size_t pos: { size_t( 0 ), size_t( 32 ), size_t( 64 ), size_t( 96 ) } ) {
+  for ( size_t pos:
+        { size_t( 0 ), size_t( 32 ), size_t( 64 ), size_t( 96 ) } ) {
     std::string s( 128, 'x' );
     s[pos] = '\n';
     // Longest terminated line is the prefix [0, pos).
