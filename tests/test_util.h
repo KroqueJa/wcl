@@ -75,10 +75,14 @@ inline usize refCount( const char* buffer, usize length, char target )
 }
 
 inline usize refCount( const std::string& s, char target = '\n' )
-{ return refCount( s.data(), s.size(), target ); }
+{
+  return refCount( s.data(), s.size(), target );
+}
 
 inline usize countStr( const std::string& s, char target = '\n' )
-{ return count( s.data(), s.size(), target ); }
+{
+  return count( s.data(), s.size(), target );
+}
 
 // Independent reference for `words`. Deliberately structured differently from
 // the implementation under test -- it tokenizes by skipping whitespace then
@@ -191,7 +195,9 @@ inline usize refChars( const std::string& s )
 
 // Run `chars` over a whole string in one shot.
 inline usize charsStr( const std::string& s )
-{ return chars( s.data(), s.size() ); }
+{
+  return chars( s.data(), s.size() );
+}
 
 // Run `chars` over the string fed in fixed-size pieces, the way a single thread
 // streams successive read buffers. Because each byte is classified on its own,

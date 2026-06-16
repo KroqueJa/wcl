@@ -6,15 +6,19 @@
 #   scripts/check-format.sh          # check, non-zero exit on any violation
 #   scripts/check-format.sh --fix    # reformat in place instead
 #
+# Pinned to clang-format-20: different majors disagree on the .clang-format
+# rules, so local and CI must run the exact same binary or the gate flaps.
 # CI runs the check form on every push/PR (the clang-format job in
 # .github/workflows/analysis.yml).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+CLANG_FORMAT="${CLANG_FORMAT:-clang-format-20}"
+
 files=( src/*.cpp include/*.h tests/*.cpp tests/*.h )
 
 if [[ "${1:-}" == "--fix" ]]; then
-  clang-format -i "${files[@]}"
+  "$CLANG_FORMAT" -i "${files[@]}"
 else
-  clang-format --dry-run -Werror "${files[@]}"
+  "$CLANG_FORMAT" --dry-run -Werror "${files[@]}"
 fi

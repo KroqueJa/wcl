@@ -48,7 +48,9 @@ inline __m256i rangeU( const __m256i v, const u8 lo, const u8 hi )
 }
 
 inline u32 mm( const __m256i v )
-{ return static_cast<u32>( _mm256_movemask_epi8( v ) ); }
+{
+  return static_cast<u32>( _mm256_movemask_epi8( v ) );
+}
 
 // ASCII separator/printable masks for one block. Bytes >= 0x80 compare
 // signed-negative, so they fall in neither mask.

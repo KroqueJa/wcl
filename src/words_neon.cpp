@@ -36,7 +36,9 @@ struct Blk
 };
 
 inline Blk loadBlk( const u8* p )
-{ return { vld1q_u8( p ), vld1q_u8( p + 16 ) }; }
+{
+  return { vld1q_u8( p ), vld1q_u8( p + 16 ) };
+}
 
 // Compact two compare results (each lane 0x00 or 0xFF) into a 32-bit mask, bit
 // i = byte i. Within each 8-byte group the AND leaves distinct powers of two,
@@ -65,7 +67,9 @@ inline uint8x16_t rangeHalf( const uint8x16_t v, const u8 lo, const u8 hi )
 }
 
 inline u32 rangeMask( const Blk& v, const u8 lo, const u8 hi )
-{ return mm( rangeHalf( v.lo, lo, hi ), rangeHalf( v.hi, lo, hi ) ); }
+{
+  return mm( rangeHalf( v.lo, lo, hi ), rangeHalf( v.hi, lo, hi ) );
+}
 
 inline u32 eqMask( const Blk& v, const u8 c )
 {
@@ -94,7 +98,9 @@ inline u32 asciiSep( const Blk& v )
 }
 
 inline u32 asciiPrint( const Blk& v )
-{ return mm( rangeHalf( v.lo, 0x21, 0x7E ), rangeHalf( v.hi, 0x21, 0x7E ) ); }
+{
+  return mm( rangeHalf( v.lo, 0x21, 0x7E ), rangeHalf( v.hi, 0x21, 0x7E ) );
+}
 
 }  // namespace
 

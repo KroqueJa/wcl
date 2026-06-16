@@ -136,7 +136,9 @@ void scanRangeThread(
     const int fd, const usize start, const usize size, const usize fileSize,
     const Workload* work, ScanState* out
 )
-{ scanRange( fd, start, size, fileSize, work, out, threadBuffer() ); }
+{
+  scanRange( fd, start, size, fileSize, work, out, threadBuffer() );
+}
 
 // Serial single-pass scan of a stream that can only be consumed once and whose
 // length fstat cannot give us up front: standard input, and any non-regular
@@ -254,9 +256,9 @@ Counts processFile(
       usize remaining = fileSize - off;
       radvisory ra{};
       ra.ra_offset = static_cast<i64>( off );
-      ra.ra_count = static_cast<int>(
-          std::min( remaining, static_cast<usize>( INT_MAX ) )
-      );
+      ra.ra_count =
+          static_cast<int>( std::min( remaining, static_cast<usize>( INT_MAX ) )
+          );
       fcntl( fd, F_RDADVISE, &ra );
       off += static_cast<usize>( ra.ra_count );
     }

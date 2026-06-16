@@ -28,7 +28,9 @@ struct Workload
   // Does anything here require scanning the file contents? Bytes alone come
   // from fstat, so a pure `-c` needs no scan at all.
   bool needsScan() const
-  { return lines || words || chars || maxLine || target; }
+  {
+    return lines || words || chars || maxLine || target;
+  }
 };
 
 // Every count qwc can produce for one input. Only the fields the Workload asked
