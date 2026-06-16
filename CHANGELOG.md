@@ -6,6 +6,8 @@ not generated from commit messages.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-16
+
 ### Performance
 
 - Big-file `-l` and `-m` are markedly faster on multi-core hosts. The
