@@ -8,7 +8,87 @@ Why is it faster than the above mentioned byte counters? Many reasons:
 2. It employs a novel SIMD-based, threaded architecture that is both faster and more cache-efficient than the traditional scalar approach. It is not faster on a single-core machine.
 3. It is written by someone who constantly tinkers to make it faster instead of shipping more useful features.
 
-`qwc` is benchmarked to be around 25-50x faster than GNU `wc` on a variety of file sizes, and 3-4x faster than `uu-wc`. Wherever possible, it is compliant with the output of GNU `wc` - the exception being for byte streams that do not constitute valid characters in the output locale. For this particular case, `wc`, `uu-wc` and `qwc` all differ in their interpretations. The input flags are all identical to `wc` - hence, one can learn to use `qwc` with eg `man wc`.
+# Benchmarks
+These benchmarks are somewhat arbitrary; they run on a non-dedicated machine and can be somewhat jittery. There exists a github action to inspect partial results independently while developing, but that runs on virtual cores and is very unreliable. Hence, these benchmarks are published as a somewhat unreliable snapshot of the current state.
+
+The benchmarks run on different corpora, here sorted by subheader. The corpora are generated, and designed to be spread among general, best-case (for some flags) and maximally adversarial (for the same flags). The most interesting column, in my view, is the "vs uu-wc" column - if you care about byte counting speed at all, that is the closest competitor. It should be mentioned once more that `qwc` is not "simply better" than `uu-wc` for these use cases - it utilizes threads more aggressively, but _is allowed to do so_ (probably) because of concessions in the area of locale correctness. `qwc` is currently guaranteed to be correct for the C and UTF-8 locales only which allows for more aggressive optimizations in the code.
+## Single large file
+host: 12 logical CPUs (qwc threads to this) · Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz · 31.3 GiB RAM
+
+| flag | qwc (ms) | latest-release (ms) | uu-wc (ms) | GNU wc (ms) | vs latest-release | vs uu-wc | vs GNU wc |
+|---|---|---|---|---|---|---|---|
+| (default) | 86.7 | 86.5 | 1758.9 | 1946.4 | 1.00x | 20.30x | 22.46x |
+| -l | 20.6 | 21.2 | 46.6 | 53.7 | 1.03x | 2.27x | 2.61x |
+| -w | 84.7 | 84.8 | 1821.6 | 1939.4 | 1.00x | 21.50x | 22.89x |
+| -c | 0.7 | 0.7 | 1.3 | 0.6 | 0.99x | 1.90x | 0.82x |
+| -m | 22.1 | 24.8 | 52.8 | 1958.1 | 1.12x | 2.39x | 88.59x |
+| -L | 51.6 | 51.5 | 1877.9 | 1988.7 | 1.00x | 36.41x | 38.56x |
+| -L -m | 64.8 | 65.6 | 1847.5 | 2007.7 | 1.01x | 28.49x | 30.96x |
+
+## Long lines (512 MiB)
+host: 12 logical CPUs (qwc threads to this) · Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz · 31.3 GiB RAM
+
+| flag | qwc (ms) | latest-release (ms) | uu-wc (ms) | GNU wc (ms) | vs latest-release | vs uu-wc | vs GNU wc |
+|---|---|---|---|---|---|---|---|
+| (default) | 88.2 | 88.8 | 1762.7 | 1883.1 | 1.01x | 19.99x | 21.36x |
+| -l | 24.0 | 23.5 | 54.8 | 55.6 | 0.98x | 2.28x | 2.32x |
+| -w | 86.4 | 85.6 | 1850.8 | 1968.9 | 0.99x | 21.42x | 22.79x |
+| -c | 0.7 | 0.7 | 1.5 | 0.6 | 0.99x | 2.07x | 0.79x |
+| -m | 26.6 | 26.1 | 51.9 | 1896.6 | 0.98x | 1.95x | 71.23x |
+| -L | 22.5 | 26.6 | 1797.8 | 1999.0 | 1.19x | 80.03x | 88.99x |
+| -L -m | 22.2 | 22.1 | 1815.4 | 1963.7 | 0.99x | 81.71x | 88.39x |
+
+## Many small files
+host: 12 logical CPUs (qwc threads to this) · Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz · 31.3 GiB RAM
+
+| flag | qwc (ms) | latest-release (ms) | uu-wc (ms) | GNU wc (ms) | vs latest-release | vs uu-wc | vs GNU wc |
+|---|---|---|---|---|---|---|---|
+| (default) | 74.1 | 73.4 | 1797.0 | 1978.5 | 0.99x | 24.24x | 26.69x |
+| -l | 22.7 | 23.9 | 73.4 | 77.1 | 1.05x | 3.23x | 3.39x |
+| -w | 75.0 | 72.6 | 1870.8 | 1928.3 | 0.97x | 24.93x | 25.70x |
+| -c | 4.4 | 4.4 | 14.5 | 13.2 | 0.99x | 3.29x | 3.00x |
+| -m | 20.1 | 20.2 | 65.9 | 1909.4 | 1.00x | 3.27x | 94.86x |
+| -L | 38.6 | 38.7 | 1807.6 | 1966.1 | 1.00x | 46.82x | 50.93x |
+| -L -m | 52.7 | 53.0 | 1888.1 | 2021.7 | 1.01x | 35.83x | 38.37x |
+
+## Mixed shape (512 MiB)
+host: 12 logical CPUs (qwc threads to this) · Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz · 31.3 GiB RAM
+
+| flag | qwc (ms) | latest-release (ms) | uu-wc (ms) | GNU wc (ms) | vs latest-release | vs uu-wc | vs GNU wc |
+|---|---|---|---|---|---|---|---|
+| (default) | 88.8 | 88.9 | 1793.9 | 1944.3 | 1.00x | 20.21x | 21.91x |
+| -l | 24.9 | 25.1 | 53.1 | 53.7 | 1.01x | 2.14x | 2.16x |
+| -w | 87.5 | 87.2 | 1853.1 | 1975.8 | 1.00x | 21.18x | 22.58x |
+| -c | 0.7 | 0.7 | 1.3 | 0.6 | 0.97x | 1.90x | 0.80x |
+| -m | 21.8 | 20.8 | 51.9 | 1965.7 | 0.96x | 2.38x | 90.17x |
+| -L | 46.7 | 47.0 | 1806.4 | 2005.5 | 1.01x | 38.64x | 42.90x |
+| -L -m | 66.6 | 69.1 | 1869.8 | 2015.1 | 1.04x | 28.07x | 30.25x |
+
+## Short lines (512 MiB)
+host: 12 logical CPUs (qwc threads to this) · Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz · 31.3 GiB RAM
+
+| flag | qwc (ms) | latest-release (ms) | uu-wc (ms) | GNU wc (ms) | vs latest-release | vs uu-wc | vs GNU wc |
+|---|---|---|---|---|---|---|---|
+| (default) | 88.1 | 88.9 | 1746.8 | 1901.4 | 1.01x | 19.82x | 21.57x |
+| -l | 18.9 | 18.8 | 46.5 | 49.2 | 1.00x | 2.46x | 2.61x |
+| -w | 84.3 | 84.4 | 1807.1 | 1902.7 | 1.00x | 21.45x | 22.58x |
+| -c | 0.7 | 0.7 | 1.3 | 0.6 | 0.98x | 1.93x | 0.82x |
+| -m | 18.9 | 18.9 | 46.1 | 1901.6 | 1.00x | 2.44x | 100.62x |
+| -L | 65.9 | 66.1 | 1800.2 | 1942.7 | 1.00x | 27.32x | 29.48x |
+| -L -m | 96.4 | 96.6 | 1804.1 | 1938.4 | 1.00x | 18.71x | 20.11x |
+
+## Single line (512 MiB)
+host: 12 logical CPUs (qwc threads to this) · Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz · 31.3 GiB RAM
+
+| flag | qwc (ms) | latest-release (ms) | uu-wc (ms) | GNU wc (ms) | vs latest-release | vs uu-wc | vs GNU wc |
+|---|---|---|---|---|---|---|---|
+| (default) | 86.2 | 86.2 | 1721.7 | 1816.1 | 1.00x | 19.98x | 21.07x |
+| -l | 18.6 | 18.7 | 45.5 | 48.0 | 1.00x | 2.45x | 2.57x |
+| -w | 84.1 | 84.2 | 1791.4 | 1815.3 | 1.00x | 21.29x | 21.57x |
+| -c | 0.7 | 0.7 | 1.4 | 0.6 | 0.96x | 1.92x | 0.80x |
+| -m | 18.8 | 18.7 | 45.5 | 1820.7 | 1.00x | 2.43x | 97.06x |
+| -L | 19.2 | 19.2 | 1746.4 | 1853.0 | 1.00x | 90.77x | 96.31x |
+| -L -m | 19.3 | 19.2 | 1728.5 | 1852.5 | 0.99x | 89.35x | 95.76x |
 
 # Installation
 
