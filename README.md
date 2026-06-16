@@ -11,6 +11,14 @@ Why is it faster than the above mentioned byte counters? Many reasons:
 `qwc` is benchmarked to be around 25-50x faster than GNU `wc` on a variety of file sizes, and 3-4x faster than `uu-wc`. Wherever possible, it is compliant with the output of GNU `wc` - the exception being for byte streams that do not constitute valid characters in the output locale. For this particular case, `wc`, `uu-wc` and `qwc` all differ in their interpretations. The input flags are all identical to `wc` - hence, one can learn to use `qwc` with eg `man wc`.
 
 # Installation
+
+## Homebrew
+```shell
+brew install kroqueja/qwc/qwc
+qwc --version
+```
+
+## Binaries
 Grab the latest release binary (the link always points at the newest tag):
 
 ```sh
