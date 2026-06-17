@@ -33,6 +33,14 @@ option( QWC_SCALAR "Use the portable scalar countlines for qwc" OFF )
 option( QWC_ASAN "Build with AddressSanitizer + UBSan" OFF )
 option( QWC_TSAN "Build with ThreadSanitizer"          OFF )
 
+# Link-time optimization on Release builds. Lets the linker inline across TUs;
+# the qwc dispatch in src/processfile.cpp calls into separately-compiled kernel
+# TUs once per buffer, so this matters at the call sites. Opt-out kept so a
+# bench can isolate the LTO contribution if a regression is suspected. Gated
+# below on CMAKE_BUILD_TYPE being Release-like and on no sanitizer being
+# active (LTO + ASan/UBSan/TSan can confuse the sanitizer instrumentation).
+option( QWC_LTO "Enable IPO/LTO on Release builds" ON )
+
 # Output-name suffix so multiple profiles can coexist without clobbering ./qwc.
 # Leave empty for the normal benchmark binary (-> ./qwc). For a sweep, set e.g.
 #   -DQWC_SUFFIX=la2   ->   ./qwc-la2
@@ -224,6 +232,26 @@ add_executable( qwc ${QWC_COMMON_SOURCES} ${QWC_COUNTLINES} ${QWC_WORDS} ${QWC_M
 set_target_properties( qwc PROPERTIES OUTPUT_NAME ${QWC_OUTPUT_NAME} )
 target_compile_options( qwc PRIVATE ${QWC_SIMD_FLAGS} )
 qwc_configure( qwc )
+
+# Apply IPO/LTO to the qwc target only (qwc-scalar and qwc_tests stay
+# unprofiled+unLTO'd -- the scalar build is the SIMD-vs-autovec baseline and
+# must stay clean; LTO-ing tests slows the iteration cycle for no semantic
+# gain). check_ipo_supported() makes this warn-and-fall-through on toolchains
+# that don't support LTO, matching the project's -march=x86-64-v3 fallback
+# discipline.
+if( QWC_LTO
+    AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo"
+    AND NOT QWC_ASAN AND NOT QWC_TSAN )
+  include( CheckIPOSupported )
+  check_ipo_supported( RESULT _qwc_ipo_ok OUTPUT _qwc_ipo_msg )
+  if( _qwc_ipo_ok )
+    set_property( TARGET qwc PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE )
+    message( STATUS "qwc: IPO/LTO enabled" )
+  else()
+    message( WARNING "qwc: IPO/LTO requested but unsupported: ${_qwc_ipo_msg}" )
+  endif()
+endif()
+
 message( STATUS "qwc: output binary -> ${CMAKE_SOURCE_DIR}/${QWC_OUTPUT_NAME}" )
 
 # Portable scalar build, on demand (old: `make qwc-scalar`). Uses the scalar
