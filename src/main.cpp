@@ -37,7 +37,30 @@ inline u32 maxThreads()
 #define QWC_FILES_PER_THREAD 32
 #endif
 
-// Map `perFile(idx)` over [0, numFiles) across the thread pool: a shared atomic
+// Shared state for the file-fanout worker. A pointer-to-context is passed to
+// each std::thread instead of a capturing lambda, keeping the thread entry a
+// plain free function (lambdas in C++ are disliked here).
+struct ScanContext
+{
+  std::atomic<usize>* nextFile;
+  usize numFiles;
+  const Options* opt;
+  const Workload* work;
+  Counts* output;
+};
+
+static void scanWorker( ScanContext* ctx )
+{
+  while ( true ) {
+    const usize idx = ctx->nextFile->fetch_add( 1 );
+    if ( idx >= ctx->numFiles ) return;
+    ctx->output[idx] = processFile(
+        ctx->opt->files[idx], *ctx->work, ctx->opt->bytesPerThread
+    );
+  }
+}
+
+// Map processFile over opt.files across the thread pool: a shared atomic
 // cursor hands the next file to whichever worker is free, and results are
 // stored at the matching index so the output order mirrors opt.files.
 //
@@ -46,30 +69,26 @@ inline u32 maxThreads()
 // The diagnostic carries no source location, so no #pragma region can catch
 // it; it is muted for this TU via -Wno-analyzer-use-of-uninitialized-value in
 // CMakeLists.txt (GCC only).
-template <typename T, typename Fn>
-static std::vector<T> mapFiles( usize numFiles, u32 numThreads, Fn perFile )
+static std::vector<Counts> mapFiles(
+    const Options& opt, const Workload& work, u32 numThreads
+)
 {
-  std::vector<T> output( numFiles );
+  const usize numFiles = opt.files.size();
+  std::vector<Counts> output( numFiles );
 
   // One worker (or one file): run inline. Spawning a pool just to hand a single
   // thread the whole glob adds spawn+join latency for no parallelism. Results
   // are still stored by index, so output order matches the input order.
   if ( numThreads <= 1 || numFiles <= 1 ) {
-    for ( usize i = 0; i < numFiles; ++i ) output[i] = perFile( i );
+    for ( usize i = 0; i < numFiles; ++i )
+      output[i] = processFile( opt.files[i], work, opt.bytesPerThread );
     return output;
   }
 
   std::atomic<usize> nextFile = 0;
+  ScanContext ctx{ &nextFile, numFiles, &opt, &work, output.data() };
   std::vector<std::thread> pool( numThreads );
-  for ( auto& t: pool ) {
-    t = std::thread( [&]() {
-      while ( true ) {
-        const usize idx = nextFile.fetch_add( 1 );
-        if ( idx >= numFiles ) return;
-        output[idx] = perFile( idx );
-      }
-    } );
-  }
+  for ( auto& t: pool ) t = std::thread( scanWorker, &ctx );
   for ( auto& t: pool ) t.join();
   return output;
 }
@@ -142,10 +161,7 @@ int main( int argc, char** argv )
     );
   }
 
-  const std::vector<Counts> output =
-      mapFiles<Counts>( numFiles, numThreads, [&]( const usize idx ) {
-        return processFile( opt.files[idx], work, opt.bytesPerThread );
-      } );
+  const std::vector<Counts> output = mapFiles( opt, work, numThreads );
   printResults( opt, output );
   return 0;
 }
