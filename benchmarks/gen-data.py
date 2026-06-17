@@ -203,6 +203,37 @@ def generate_many(out_dir: str, total: int, seed: int, mbfrac: float,
           file=sys.stderr)
 
 
+def generate_pgo_training(out_dir: str, seed: int) -> None:
+    """Emit the six-file PGO training corpus into out_dir.
+
+    Each file is sized to exercise a specific kernel control-flow path
+    without paying for steady-state buffer measurement; total ~32 MiB.
+    Each shape calls the existing generate_single() with a fixed
+    (size, mbfrac, shape, utf8_class) tuple.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    MB = 1024 * 1024
+    # (filename, size_bytes, mbfrac, shape, utf8_class)
+    # The CJK row uses shape="short" because the spec calls out cjk-short.txt
+    # as the AVX2 punt-path training input; short lines give the highest
+    # newline density per byte and match the bench's cjk-short.txt cell.
+    # mbfrac=1.0 on the UTF-8 rows so the multibyte pool is fully multibyte;
+    # the utf8_class filter then narrows that pool to 2-byte or 3-byte
+    # sequences (without mbfrac=1.0 you'd get ASCII files with a sprinkle of
+    # UTF-8 -- not what the punt-path training needs).
+    shapes = [
+        ("ascii-mixed.txt",       8 * MB, 0.0, "mixed",       "mixed"),
+        ("ascii-long.txt",        8 * MB, 0.0, "long",        "mixed"),
+        ("ascii-short.txt",       4 * MB, 0.0, "short",       "mixed"),
+        ("ascii-single-line.txt", 4 * MB, 0.0, "single-line", "mixed"),
+        ("utf8-mixed.txt",        4 * MB, 1.0, "mixed",       "2byte"),
+        ("utf8-cjk.txt",          4 * MB, 1.0, "short",       "3byte"),
+    ]
+    for filename, size, mbfrac, shape, utf8_class in shapes:
+        path = os.path.join(out_dir, filename)
+        generate_single(path, size, seed, mbfrac, shape, utf8_class)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--size", default="512MiB",
@@ -211,7 +242,7 @@ def main() -> None:
                     help="RNG seed (default fixed, for determinism)")
     ap.add_argument("--multibyte-fraction", type=float, default=0.08,
                     help="fraction of pool words that are multibyte (default 0.08)")
-    ap.add_argument("--out", required=True,
+    ap.add_argument("--out",
                     help="output file (default) or directory (--many)")
     ap.add_argument("--many", action="store_true",
                     help="generate many varied-size files into --out (a directory)")
@@ -230,14 +261,28 @@ def main() -> None:
                           "mixed (default) keeps the historical pool unchanged; "
                           "non-mixed drops every word that has a multibyte "
                           "character outside the requested length class."))
+    ap.add_argument("--pgo-training", action="store_true",
+                    help=("emit a six-file ~32 MiB training corpus for PGO "
+                          "(scripts/build-pgo.sh) instead of a single corpus "
+                          "file. Requires --out-dir; --size/--out/--many ignored."))
+    ap.add_argument("--out-dir", default=None,
+                    help="output directory for --pgo-training (created if missing)")
     args = ap.parse_args()
 
-    if args.many:
+    if args.pgo_training:
+        if not args.out_dir:
+            ap.error("--pgo-training requires --out-dir")
+        generate_pgo_training(args.out_dir, args.seed)
+    elif args.many:
+        if not args.out:
+            ap.error("--out is required unless --pgo-training is set")
         generate_many(args.out, parse_size(args.size), args.seed,
                       args.multibyte_fraction, parse_size(args.min_file),
                       parse_size(args.max_file), args.line_length,
                       args.utf8_class)
     else:
+        if not args.out:
+            ap.error("--out is required unless --pgo-training is set")
         generate_single(args.out, parse_size(args.size), args.seed,
                         args.multibyte_fraction, args.line_length,
                         args.utf8_class)
