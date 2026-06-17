@@ -11,6 +11,7 @@ benchmarks/__pycache__
 # CMake build artifacts
 build/
 build-release
+build-pgo/
 build-wsl/
 cmake-build-*/
 CMakeCache.txt
