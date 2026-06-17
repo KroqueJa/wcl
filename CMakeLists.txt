@@ -41,6 +41,18 @@ option( QWC_TSAN "Build with ThreadSanitizer"          OFF )
 # active (LTO + ASan/UBSan/TSan can confuse the sanitizer instrumentation).
 option( QWC_LTO "Enable IPO/LTO on Release builds" ON )
 
+# Profile-guided optimization. Three-stage build: QWC_PGO=generate produces an
+# instrumented binary; run it across a training corpus (see
+# scripts/build-pgo.sh); rebuild with QWC_PGO=use to consume the profile.
+# QWC_PGO_DATA_DIR holds raw profile data on generate (default
+# ${CMAKE_BINARY_DIR}/pgo-profile) and merged data on use; both stages must
+# point at the same directory. Off by default so plain Release builds don't
+# require a training step.
+set( QWC_PGO "off" CACHE STRING "PGO stage: off | generate | use" )
+set_property( CACHE QWC_PGO PROPERTY STRINGS off generate use )
+set( QWC_PGO_DATA_DIR "${CMAKE_BINARY_DIR}/pgo-profile" CACHE PATH
+     "Directory for PGO profile data (raw on generate, merged on use)" )
+
 # Output-name suffix so multiple profiles can coexist without clobbering ./qwc.
 # Leave empty for the normal benchmark binary (-> ./qwc). For a sweep, set e.g.
 #   -DQWC_SUFFIX=la2   ->   ./qwc-la2
@@ -249,6 +261,27 @@ if( QWC_LTO
     message( STATUS "qwc: IPO/LTO enabled" )
   else()
     message( WARNING "qwc: IPO/LTO requested but unsupported: ${_qwc_ipo_msg}" )
+  endif()
+endif()
+
+# PGO compile + link options, applied per-stage to the qwc target only. Clang
+# and AppleClang write raw profile data (default_*.profraw) that must be
+# merged via llvm-profdata before -fprofile-use; GCC writes .gcda files and
+# consumes them in place. scripts/build-pgo.sh handles the merge step.
+if( QWC_PGO STREQUAL "generate" )
+  target_compile_options( qwc PRIVATE -fprofile-generate=${QWC_PGO_DATA_DIR} )
+  target_link_options(    qwc PRIVATE -fprofile-generate=${QWC_PGO_DATA_DIR} )
+elseif( QWC_PGO STREQUAL "use" )
+  if( CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
+    target_compile_options( qwc PRIVATE
+      -fprofile-use=${QWC_PGO_DATA_DIR}/qwc.profdata
+      -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date )
+    target_link_options( qwc PRIVATE
+      -fprofile-use=${QWC_PGO_DATA_DIR}/qwc.profdata )
+  else()  # GCC
+    target_compile_options( qwc PRIVATE
+      -fprofile-use=${QWC_PGO_DATA_DIR} -fprofile-correction )
+    target_link_options( qwc PRIVATE -fprofile-use=${QWC_PGO_DATA_DIR} )
   endif()
 endif()
 
