@@ -29,7 +29,14 @@ import tempfile
 # Default flag matrix. '' is the bare invocation (wc prints lines/words/bytes).
 # -c is kept for completeness; all three tools take the fstat fast path for it,
 # so it mostly measures process startup.
-DEFAULT_FLAGS = ["", "-l", "-w", "-c", "-m", "-L", "-L -m"]
+# `-l -w`, `-l -L`, `-l -w -m` cover the planned-fusion combos in TODO.md's
+# `Next` list. Before each fusion lands, the cell establishes the two-pass
+# baseline; after, it's the regression-monitoring surface. `-L -m` is the
+# existing fused cell. The `-c` combos and `-wL` are deliberately not in the
+# matrix -- we are not committing to ship every flag combination as a fused
+# kernel.
+DEFAULT_FLAGS = ["", "-l", "-w", "-c", "-m", "-L", "-L -m",
+                 "-l -w", "-l -L", "-l -w -m"]
 
 
 def have(cmd: str) -> bool:

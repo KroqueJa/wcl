@@ -458,6 +458,171 @@ moves to `Not doing` alongside this finding.
 corpora in both locales; the conformance suite passed all 13,542 required
 comparisons before this null-result decision was made.
 
+## Finding 8 — Kernel fusion: fold a newline tally into the AVX2 words kernel (`-lw`): null result
+
+Measured **2026-06-17** on the same native Linux box as Findings 6–7
+(Intel i7-8700, 6C/12T, 3.2 GHz; AVX2; kernel 7.0.12-arch1-1; root
+`/dev/sdb2` ext4), warm page cache, `hyperfine --warmup 1 --runs 10`,
+the six 512 MiB `gen-data.py` corpora plus a new `cjk-short.txt`
+(256 MiB, 100 % 3-byte CJK words, short lines), both locales for the
+mechanism-relevant cells. Branch `words-kernel-newline-fusion`
+(`wordsAndLines` sibling free function in `src/words_{scalar,avx2}.cpp`
+called from `scanBuffer` when both `-l` and `-w` are requested) vs
+`main` (separate `words()` + `count('\n')` passes). Spec:
+`docs/superpowers/specs/2026-06-16-words-kernel-newline-fusion-design.md`.
+
+**TL;DR.** The fusion's predicted mechanism — "one buffer pass instead
+of two, saving the DRAM trip" — does not apply on this host. Finding 6's
+256 KiB per-thread scan buffer is already L2-resident, so the second
+`count('\n')` pass costs nothing the fusion can save; meanwhile the
+fused inner loop pays an extra `vpcmpeqb + vpsubb` per 32-byte block
+plus a per-block drain branch, adding **+89 M instructions (+5 %) and
++45 M branches (+13 %)** to `-lw` without any LLC-load-miss drop.
+Wall-clock `-lw` and bare `-lwc` regress **5–6 % across every corpus
+shape**, on a quiet system with sub-1 % run-to-run variance. The
+CJK / `C.UTF-8` punt-path cell shows a small ~3 % win because
+`scalarUtf8Lines` absorbs the newline tally for free during scalar
+walking, but that is a niche corner (`--utf8-class 3byte` short-line
+input) against a 5 % regression on the common case. Null result: the
+unfused two-call dispatch in `scanBuffer` stays.
+
+**Wall-clock matrix** (ms, `qwc-branch` vs the `v0.2.0` release tagged
+as `main`, `vs main` is the campaign signal). All cells `LC_ALL=C`, the
+default invocation context for the regression-sensitive cells. Fused
+cells (driven by this branch) are **bold**; the others are no-regression
+guards. `mixed-512MiB` (the historical default — the most-common-case
+cell):
+
+| flag      | qwc (ms) | main (ms) | vs main |
+|-----------|---------:|----------:|--------:|
+| **(default = -lwc)** | 91.9 | 86.4 | **0.94×** |
+| **-l -w** | 91.3 | 86.5 | **0.95×** |
+| **-l -w -m** | 93.1 | 87.4 | **0.94×** |
+| -w        | 84.2 | 84.4 | 1.00× |
+| -l        | 18.7 | 18.5 | 0.99× |
+| -L        | 45.2 | 45.2 | 1.00× |
+| -L -m     | 63.6 | 63.6 | 1.00× |
+| -l -L     | 48.0 | 48.1 | 1.00× |
+| -m        | 18.7 | 18.6 | 1.00× |
+
+`short-512MiB`, `long-512MiB`, `single-line-512MiB`, `big.txt` (single
+512 MiB file), `many` (small-files corpus): same shape — the three
+fused cells all regress 0.90–0.95×, every guard cell sits at
+0.99–1.02×. The per-corpus spread is in the second decimal place; the
+consistency across **six** corpus shapes is what makes the regression
+load-bearing rather than noise.
+
+**Mechanism counters** (`perf stat -e cycles,instructions,branches,
+branch-misses,LLC-load-misses -r 10`, `-l -w` on `mixed-256MiB`,
+`LC_ALL=C`):
+
+| metric         | qwc-branch    | qwc-main      |    Δ |
+|----------------|--------------:|--------------:|------|
+| cycles         | 1,068,162,776 |   992,688,197 | **+7.6 %** |
+| instructions   | 1,884,207,366 | 1,795,186,316 | **+5.0 %** |
+| branches       |   400,967,876 |   356,268,929 | **+12.6 %** |
+| branch-misses  |    14,157,306 |    13,834,196 | +2.3 % |
+| LLC-load-misses|          ~877 |          ~922 | flat (within ~6 % run variance) |
+| time elapsed   |       57.5 ms |       53.9 ms | +6.7 % |
+
+Instructions and branches both rise (the per-block `vpcmpeqb + vpsubb`
+plus the drain-check branch), branch-misses don't (the drain branch
+is predicted correctly 254/255 iterations), and LLC-load-misses don't
+drop — the predicted "second buffer pass eliminated" never
+materializes as a DRAM saving because the second pass was already
+L2-resident.
+
+`-w` alone is **byte-identical** between the two builds at the
+instruction level (1,759,390,283 vs 1,759,390,293 — a 10-instruction
+diff out of 1.76 G), confirming the regression is localised to the new
+fused dispatch and not any incidental codegen drift on the existing
+kernel. `-l` alone is unchanged too.
+
+**The punt-path cell** (`cjk-short.txt`, `LC_ALL=C.UTF-8`, `-l -w`):
+branch 209 ms vs main 217 ms — **branch faster by 3.7 %**. Mechanism:
+the AVX2 UTF-8 driver punts CJK-heavy blocks to `scalarUtf8Lines`,
+which walks byte-by-byte and tallies newlines as part of the same
+walk — no extra SIMD cost. Meanwhile the unfused baseline still pays a
+full `count('\n')` pass over the corpus. On `cjk-short.txt` under
+`LC_ALL=C` the CJK is just bytes, the fast path engages, and the cell
+regresses ~0.95× like the rest. So the win is locked to one niche:
+UTF-8 mode + a corpus dense in punt-class multibyte. Not a ship case.
+
+**Decision: do not ship.** The campaign's spec defined the primary
+win as "≥ 15 % on `-l -w` ASCII" and the falsifier as ">3 % regression
+on `cjk-short.txt / -l -w`". The actual landing is the **inverse**:
+a 5–6 % regression on the primary cell, a 3.7 % gain on the falsifier.
+That inversion alone — never mind the missed primary — is decisive:
+the spec's mental model of where the cost lives (cjk punt path) and
+where the win lives (ASCII fast path) was backwards on this hardware.
+
+**Why the predicted mechanism doesn't fire.** Finding 6 tuned the
+per-thread scan buffer to 256 KiB so it stays L2-resident on every
+host the project ships against. The second `count('\n')` pass is
+therefore already cache-resident — the fusion's "save the DRAM trip"
+claim presupposes a DRAM trip that Finding 6 already eliminated. The
+remaining cost of running `count_avx2.cpp` over a warm L2 buffer is
+dwarfed by the extra per-block work the fused inner loop has to do.
+The fusion is chasing savings Finding 6 already made.
+
+**Why ASCII regresses and UTF-8 punts win.** ASCII fast path: the
+words driver's per-block work is already tightly compute-bound on
+`stepMasks` plus the per-block mask construction; adding one more
+compare and one more accumulator update per block costs ~25 % more
+inner-loop work, which the per-buffer count savings (negligible on
+warm L2) cannot recover. UTF-8 punt path: the scalar walker already
+pays per-byte cost per code point; folding a `newlines += (b ==
+'\n')` increment into that walk is free, while the saved `count('\n')`
+pass is real work the unfused baseline still performs at the
+parallel-scanner level. Same fusion idea, two different cost regimes,
+opposite outcomes.
+
+**Structural fix attempted.** The first measurement was on the spec's
+chunked-outer-loop drain shape (batched 255 blocks per outer iter, the
+`count_avx2.cpp` discipline). Replacing it with a per-iter drain
+check (single counter + predicted-not-taken branch, mirroring the
+UTF-8 path) was tried as a second pass: the cycle count moved by
+< 1 % and the instruction / branch counts were identical to within
+0.001 %. The cost is the per-block work itself, not the loop shape.
+No further iteration is worth attempting on this mechanism.
+
+**NEON sibling.** The spec called out a release-blocker NEON sibling
+entry once the AVX2 result lands. The mechanism here is ISA-symmetric
+— the same `vpcmpeqb + vpsubb` instructions exist as `vceqq_u8 +
+vsubq_u8` on NEON, and Apple Silicon's per-core L2 is even larger
+than i7-8700's, so the "second pass already L2-resident" condition is
+at least as strong. There is no credible story for why NEON would
+behave qualitatively differently. The sibling Now entry is **not
+added**; both the AVX2 entry and the never-created NEON sibling move
+to `Not doing` together.
+
+**What stays.** This campaign produced four reusable artifacts even
+though the fusion itself doesn't ship:
+
+1. `benchmarks/gen-data.py --utf8-class {mixed,2byte,3byte,4byte}` —
+   filters `MULTIBYTE_WORDS` by UTF-8 encoding length. Needed for the
+   `cjk-short.txt` corpus here; useful for future punt-path
+   measurements (e.g. the open "expand AVX2 words to 3-byte
+   sequences" TODO entry).
+2. `benchmarks/test-data/cjk-short.txt` — 256 MiB, 100 % 3-byte CJK,
+   short lines. Permanent fixture for future kernel campaigns; the
+   recipe is the `--utf8-class 3byte --line-length short` line above.
+3. `bench.py` `DEFAULT_FLAGS` now includes `-l -w`, `-l -L`,
+   `-l -w -m` so the next release-readiness run shows the
+   planned-fusion cells — establishing baselines for the two remaining
+   `Next` fusion entries (`-l -L`, `-l -w -m`) so they don't have to
+   redo this campaign's matrix work.
+4. `scripts/perf-ab.sh` — A/B `perf stat -r N` wrapper for the
+   working-tree `qwc` against `./qwc-main`, complementing `bench.py`
+   (which gives wall-clock) with cycles / instructions / branches /
+   LLC-load-misses (which gives mechanism). Reusable for any kernel
+   campaign.
+
+**Conformance:** before the null-result decision was made, the
+conformance suite passed all required comparisons (24,411 matched,
+0 failed) against the fused build. The fusion was bit-faithful; it
+just didn't pay off.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

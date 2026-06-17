@@ -34,6 +34,34 @@ MULTIBYTE_WORDS = [
 ASCII_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 
 
+def _filter_multibyte(words: list, utf8_class: str) -> list:
+    """Keep only the multibyte words whose UTF-8 encoding length matches.
+    `mixed` returns the input unchanged so existing corpora stay byte-identical.
+
+    The classifier is per-character: a word qualifies if every non-ASCII
+    character in it has the requested encoding length. Pure-ASCII words are
+    dropped from non-mixed pools (the whole point is to force the specific
+    multibyte class)."""
+    if utf8_class == "mixed":
+        return words
+    want = {"2byte": 2, "3byte": 3, "4byte": 4}[utf8_class]
+    kept = []
+    for w in words:
+        has_mb = False
+        ok = True
+        for ch in w:
+            b = len(ch.encode("utf-8"))
+            if b == 1:
+                continue
+            has_mb = True
+            if b != want:
+                ok = False
+                break
+        if has_mb and ok:
+            kept.append(w)
+    return kept
+
+
 def parse_size(text: str) -> int:
     """Parse a byte count: plain int, or with a KB/MB/GB or KiB/MiB/GiB suffix."""
     t = text.strip()
@@ -49,13 +77,25 @@ def parse_size(text: str) -> int:
     return int(t)
 
 
-def build_word_pool(rng: random.Random, n: int, multibyte_fraction: float) -> list:
+def build_word_pool(rng: random.Random, n: int, multibyte_fraction: float,
+                    utf8_class: str = "mixed") -> list:
     """Pre-generate a pool of words to sample from -- far faster than minting a
-    fresh random word per token when writing hundreds of MiB."""
+    fresh random word per token when writing hundreds of MiB.
+
+    `utf8_class` filters MULTIBYTE_WORDS by UTF-8 encoding length: `mixed`
+    keeps the historical pool unchanged (so existing corpora reproduce
+    byte-for-byte); `2byte`/`3byte`/`4byte` keep only words whose multibyte
+    characters all have that length."""
+    mb_pool = _filter_multibyte(MULTIBYTE_WORDS, utf8_class)
+    if multibyte_fraction > 0 and not mb_pool:
+        raise SystemExit(
+            f"--utf8-class={utf8_class} filtered MULTIBYTE_WORDS to zero "
+            f"entries; either widen the class or set --multibyte-fraction 0"
+        )
     pool = []
     for _ in range(n):
-        if rng.random() < multibyte_fraction:
-            pool.append(rng.choice(MULTIBYTE_WORDS))
+        if mb_pool and rng.random() < multibyte_fraction:
+            pool.append(rng.choice(mb_pool))
         else:
             length = rng.randint(2, 12)
             pool.append("".join(rng.choices(ASCII_ALPHABET, k=length)))
@@ -127,20 +167,22 @@ def write_text(f, target: int, pool: list, rng: random.Random,
 
 
 def generate_single(out_path: str, size: int, seed: int, mbfrac: float,
-                    shape: str = "mixed") -> None:
+                    shape: str = "mixed", utf8_class: str = "mixed") -> None:
     rng = random.Random(seed)
-    pool = build_word_pool(rng, 50_000, mbfrac)
+    pool = build_word_pool(rng, 50_000, mbfrac, utf8_class)
     with open(out_path, "wb") as f:
         write_text(f, size, pool, rng, shape)
     actual = os.path.getsize(out_path)
     print(f"wrote {actual} bytes ({actual / 1024**2:.1f} MiB) to {out_path} "
-          f"(seed={seed}, shape={shape})", file=sys.stderr)
+          f"(seed={seed}, shape={shape}, utf8_class={utf8_class})",
+          file=sys.stderr)
 
 
 def generate_many(out_dir: str, total: int, seed: int, mbfrac: float,
-                  min_file: int, max_file: int, shape: str = "mixed") -> None:
+                  min_file: int, max_file: int, shape: str = "mixed",
+                  utf8_class: str = "mixed") -> None:
     rng = random.Random(seed)
-    pool = build_word_pool(rng, 50_000, mbfrac)
+    pool = build_word_pool(rng, 50_000, mbfrac, utf8_class)
     os.makedirs(out_dir, exist_ok=True)
 
     lo, hi = math.log(min_file), math.log(max_file)
@@ -157,7 +199,8 @@ def generate_many(out_dir: str, total: int, seed: int, mbfrac: float,
 
     print(f"wrote {idx} files (~{produced / 1024**2:.1f} MiB) to {out_dir}/ "
           f"with log-uniform sizes in [{min_file}, {max_file}] bytes "
-          f"(seed={seed}, shape={shape})", file=sys.stderr)
+          f"(seed={seed}, shape={shape}, utf8_class={utf8_class})",
+          file=sys.stderr)
 
 
 def main() -> None:
@@ -181,15 +224,23 @@ def main() -> None:
                     help=("line-length distribution: short (40-80 B), mixed "
                           "(default, historical 3-18 word lines with 1%% long "
                           "spikes), long (2-8 KiB), single-line (one line)"))
+    ap.add_argument("--utf8-class", default="mixed",
+                    choices=["mixed", "2byte", "3byte", "4byte"],
+                    help=("filter MULTIBYTE_WORDS by UTF-8 encoding length. "
+                          "mixed (default) keeps the historical pool unchanged; "
+                          "non-mixed drops every word that has a multibyte "
+                          "character outside the requested length class."))
     args = ap.parse_args()
 
     if args.many:
         generate_many(args.out, parse_size(args.size), args.seed,
                       args.multibyte_fraction, parse_size(args.min_file),
-                      parse_size(args.max_file), args.line_length)
+                      parse_size(args.max_file), args.line_length,
+                      args.utf8_class)
     else:
         generate_single(args.out, parse_size(args.size), args.seed,
-                        args.multibyte_fraction, args.line_length)
+                        args.multibyte_fraction, args.line_length,
+                        args.utf8_class)
 
 
 if __name__ == "__main__":
