@@ -6,6 +6,14 @@ not generated from commit messages.
 
 ## [Unreleased]
 
+### Performance
+
+- Release binaries are now built with PGO + LTO. Headline default-invocation
+  cells (`-lwc`, `-l -w`) on mixed/short corpora are <TBD>% faster against
+  the previous release. Binary size grew by <TBD>% (inlining-driven). Opt
+  out of LTO with `-DQWC_LTO=OFF`; build locally with PGO via
+  `scripts/build-pgo.sh`.
+
 ## [0.2.0] - 2026-06-16
 
 ### Performance
