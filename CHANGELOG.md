@@ -8,14 +8,14 @@ not generated from commit messages.
 
 ### Performance
 
-- Release binaries are now built with PGO + LTO. The win is concentrated on
-  the longest-line scan: `-L`, `-L -m`, and `-l -L` are ~<TBD>% faster against
-  the previous release (`v0.2.0`), where profile-guided block layout pays off
-  on the per-byte state machine. The read-bound counters (`-l`, `-m`, `-c`)
-  are unchanged — they already run at the I/O floor — and word counting (`-w`)
-  is a smaller ~<TBD>%. Binary `.text` grew ~<TBD>% (inlining-driven). Opt out
-  of LTO with `-DQWC_LTO=OFF`; build locally with PGO via
-  `scripts/build-pgo.sh`. See `benchmarks/README.md` Finding 9.
+- Release binaries are now built with LTO (default-on; opt out with
+  `-DQWC_LTO=OFF`). It is perf-neutral across the benchmark matrix — every
+  flag bundle is within ±1% of the previous release (`v0.2.0`) — and ships
+  because it is essentially free. PGO was evaluated alongside it and dropped:
+  GCC profile-guided optimization regressed the headline word-counting paths
+  (default, `-w`, `-l -w`) by 7–10% while only helping the rarer `-L` family,
+  consistently optimizing the wrong kernel. See `benchmarks/README.md`
+  Finding 9.
 
 ## [0.2.0] - 2026-06-16
 
