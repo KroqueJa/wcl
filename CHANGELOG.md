@@ -8,11 +8,14 @@ not generated from commit messages.
 
 ### Performance
 
-- Release binaries are now built with PGO + LTO. Headline default-invocation
-  cells (`-lwc`, `-l -w`) on mixed/short corpora are <TBD>% faster against
-  the previous release. Binary size grew by <TBD>% (inlining-driven). Opt
-  out of LTO with `-DQWC_LTO=OFF`; build locally with PGO via
-  `scripts/build-pgo.sh`.
+- Release binaries are now built with PGO + LTO. The win is concentrated on
+  the longest-line scan: `-L`, `-L -m`, and `-l -L` are ~<TBD>% faster against
+  the previous release (`v0.2.0`), where profile-guided block layout pays off
+  on the per-byte state machine. The read-bound counters (`-l`, `-m`, `-c`)
+  are unchanged — they already run at the I/O floor — and word counting (`-w`)
+  is a smaller ~<TBD>%. Binary `.text` grew ~<TBD>% (inlining-driven). Opt out
+  of LTO with `-DQWC_LTO=OFF`; build locally with PGO via
+  `scripts/build-pgo.sh`. See `benchmarks/README.md` Finding 9.
 
 ## [0.2.0] - 2026-06-16
 
