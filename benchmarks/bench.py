@@ -119,6 +119,10 @@ def main() -> None:
     ap.add_argument("--uuwc", default=None,
                     help="uutils invocation (default: auto-detect 'uu-wc' or 'coreutils wc')")
     ap.add_argument("--gwc", default="wc", help="GNU wc invocation")
+    ap.add_argument("--no-competitors", action="store_true",
+                    help="skip uu-wc and GNU wc columns (and their autodetect). "
+                         "Used by scripts/bench-sweep.sh for the fast inner-loop "
+                         "sweep; the per-corpus wrappers keep them by default.")
     ap.add_argument("--data", required=True,
                     help="corpus file, or a directory (all files in it are counted)")
     ap.add_argument("--warmup", type=int, default=1)
@@ -145,24 +149,25 @@ def main() -> None:
     columns = [("qwc", args.qwc)]
     if args.qwc_main:
         columns.append(("main", args.qwc_main))
-    # uutils ships as either a standalone 'uu-wc' or the multi-call 'coreutils
-    # wc' dispatcher, depending on distro packaging. Try both when not pinned.
-    uuwc = args.uuwc
-    if uuwc is None:
-        for candidate in ("uu-wc", "coreutils wc"):
-            if have(candidate):
-                uuwc = candidate
-                break
-    if uuwc and have(uuwc):
-        columns.append(("uu-wc", uuwc))
-    else:
-        print(f"note: '{uuwc or 'uu-wc / coreutils wc'}' not found; "
-              "skipping uu-wc column", file=sys.stderr)
-    if have(args.gwc):
-        columns.append(("GNU wc", args.gwc))
-    else:
-        print(f"note: '{args.gwc}' not found; skipping GNU wc column",
-              file=sys.stderr)
+    if not args.no_competitors:
+        # uutils ships as either a standalone 'uu-wc' or the multi-call 'coreutils
+        # wc' dispatcher, depending on distro packaging. Try both when not pinned.
+        uuwc = args.uuwc
+        if uuwc is None:
+            for candidate in ("uu-wc", "coreutils wc"):
+                if have(candidate):
+                    uuwc = candidate
+                    break
+        if uuwc and have(uuwc):
+            columns.append(("uu-wc", uuwc))
+        else:
+            print(f"note: '{uuwc or 'uu-wc / coreutils wc'}' not found; "
+                  "skipping uu-wc column", file=sys.stderr)
+        if have(args.gwc):
+            columns.append(("GNU wc", args.gwc))
+        else:
+            print(f"note: '{args.gwc}' not found; skipping GNU wc column",
+                  file=sys.stderr)
 
     headers = [c[0] for c in columns]
     rows = []  # each: {header: mean_seconds}

@@ -234,6 +234,64 @@ def generate_pgo_training(out_dir: str, seed: int) -> None:
         generate_single(path, size, seed, mbfrac, shape, utf8_class)
 
 
+def generate_bench_corpora(out_dir: str, seed: int) -> None:
+    """Emit the six bench-sweep corpora at 256 MiB each into out_dir.
+
+    Designed for scripts/bench-sweep.sh: every corpus exercises a different
+    kernel control-flow shape, but at a size where the full sweep finishes
+    in ~2 minutes on the i7-8700 (i.e. ~4x faster than the historical
+    512 MiB corpora) while staying well above the 256 KiB L2-resident
+    scan buffer that the Finding-6 mechanism depends on.
+
+    Idempotent: skips any output that already exists at the expected size,
+    so re-running the flag is cheap.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    MIB = 1024 * 1024
+    SIZE = 256 * MIB
+    # (filename, shape, line_length, multibyte_fraction)
+    # `big.txt` keeps its historical name -- it's the headline general-shape
+    # corpus and the per-corpus wrappers + bench scripts have always called
+    # it that. The other five drop the `-512MiB` suffix that's now misleading.
+    # `many/` is a directory of small files (generate_many handles it).
+    singles = [
+        ("big.txt",     "mixed",       0.08),
+        ("long",        "long",        0.08),
+        ("mixed",       "mixed",       0.08),
+        ("short",       "short",       0.08),
+        ("single-line", "single-line", 0.08),
+    ]
+    for filename, shape, mbfrac in singles:
+        path = os.path.join(out_dir, filename)
+        if os.path.isfile(path):
+            actual_size = os.path.getsize(path)
+            # Allow ~5% slop since write_text stops when the target is hit,
+            # not when it's exact, and can overshoot while writing newlines.
+            if abs(actual_size - SIZE) <= SIZE // 20:
+                print(f"skip {filename}: already {actual_size} bytes", file=sys.stderr)
+                continue
+        generate_single(path, SIZE, seed, mbfrac, shape, "mixed")
+
+    # `many/`: total ~256 MiB across log-uniform [4 KiB, 1 MiB] file sizes,
+    # same shape spec generate_many already takes. Idempotency keys off the
+    # directory's total size rather than per-file size (the file count and
+    # individual sizes are RNG-driven, so a size-equal regen would shuffle
+    # names for no reason).
+    many_path = os.path.join(out_dir, "many")
+    if os.path.isdir(many_path):
+        total = sum(os.path.getsize(os.path.join(many_path, f))
+                    for f in os.listdir(many_path)
+                    if os.path.isfile(os.path.join(many_path, f)))
+        # Allow ~5% slop since generate_many stops when the target is hit,
+        # not when it's exact.
+        if abs(total - SIZE) <= SIZE // 20:
+            print(f"skip many/: already ~{total // MIB} MiB", file=sys.stderr)
+            return
+    generate_many(many_path, SIZE, seed, 0.08,
+                  parse_size("4KiB"), parse_size("1MiB"),
+                  "mixed", "mixed")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--size", default="512MiB",
@@ -265,6 +323,11 @@ def main() -> None:
                     help=("emit a six-file ~32 MiB training corpus for PGO "
                           "(scripts/build-pgo.sh) instead of a single corpus "
                           "file. Requires --out-dir; --size/--out/--many ignored."))
+    ap.add_argument("--bench-corpora", action="store_true",
+                    help=("regenerate the six bench-sweep corpora at 256 MiB "
+                          "each into --out-dir. Used by scripts/bench-sweep.sh "
+                          "to set up a fresh box; idempotent on repeat runs. "
+                          "Requires --out-dir; --size/--out/--many ignored."))
     ap.add_argument("--out-dir", default=None,
                     help="output directory for --pgo-training (created if missing)")
     args = ap.parse_args()
@@ -273,6 +336,10 @@ def main() -> None:
         if not args.out_dir:
             ap.error("--pgo-training requires --out-dir")
         generate_pgo_training(args.out_dir, args.seed)
+    elif args.bench_corpora:
+        if not args.out_dir:
+            ap.error("--bench-corpora requires --out-dir")
+        generate_bench_corpora(args.out_dir, args.seed)
     elif args.many:
         if not args.out:
             ap.error("--out is required unless --pgo-training is set")
