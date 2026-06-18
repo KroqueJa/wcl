@@ -51,10 +51,12 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Build PGO+LTO qwc
-        run: ./scripts/build-pgo.sh build
+      - name: Build LTO qwc
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target qwc -j
 
-      - name: Build tests (unprofiled, LTO off)
+      - name: Build tests (LTO off)
         run: cmake --build build --target qwc_tests -j
 
       - name: "Gate: unit tests"

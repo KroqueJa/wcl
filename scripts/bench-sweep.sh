@@ -2,12 +2,10 @@
 # Unified qwc benchmark sweep. Drives benchmarks/bench.py across the six
 # bench corpora and prints per-step wall time.
 #
-# Default: LTO-only candidate (no PGO), qwc + latest-release columns only
-# (no uu-wc / GNU wc), ~2 min total on the i7-8700.
+# Default: LTO candidate, qwc + latest-release columns only (no uu-wc /
+# GNU wc), ~2 min total on the i7-8700.
 #
 # Flags:
-#   --pgo                build the candidate with PGO+LTO (build-pgo.sh)
-#                        instead of plain Release. Adds ~90s build time.
 #   --with-competitors   re-add uu-wc + GNU wc columns. Adds ~3 min.
 #   --no-prep            skip 'sudo bench-prep apply' (default: apply on
 #                        Linux; macOS skips automatically).
@@ -22,12 +20,10 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 # --- flag parsing -----------------------------------------------------------
-use_pgo=0
 with_competitors=0
 do_prep=1
 for arg in "$@"; do
   case "$arg" in
-    --pgo)               use_pgo=1 ;;
     --with-competitors)  with_competitors=1 ;;
     --no-prep)           do_prep=0 ;;
     -h|--help)
@@ -58,17 +54,10 @@ if [ "$(uname -s)" = "Linux" ] && [ "$do_prep" = "1" ]; then
 fi
 
 # --- build candidate --------------------------------------------------------
-if [ "$use_pgo" = "1" ]; then
-  echo "=== Building PGO+LTO candidate ==="
-  step_start=$SECONDS
-  QWC_BENCH_PGO=1 ./scripts/sync-current-build.sh
-  step_time "$step_start"
-else
-  echo "=== Building LTO-only candidate ==="
-  step_start=$SECONDS
-  ./scripts/sync-current-build.sh
-  step_time "$step_start"
-fi
+echo "=== Building candidate ==="
+step_start=$SECONDS
+./scripts/sync-current-build.sh
+step_time "$step_start"
 cp qwc "$candidate_bin"
 
 # --- baseline ---------------------------------------------------------------
@@ -123,6 +112,3 @@ echo
 echo "=== Sweep complete ==="
 echo "    total wall: $(( SECONDS - sweep_start ))s"
 echo "Tables in logs/bench-*.log, means in logs/*.json."
-if [ "$use_pgo" = "1" ]; then
-  echo "Candidate was PGO -- confirm with: grep -o 'fprofile-use=[^ ]*' build-pgo/CMakeFiles/qwc.dir/flags.make"
-fi

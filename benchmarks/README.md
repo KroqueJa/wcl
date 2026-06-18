@@ -623,113 +623,138 @@ conformance suite passed all required comparisons (24,411 matched,
 0 failed) against the fused build. The fusion was bit-faithful; it
 just didn't pay off.
 
-## Finding 9 — PGO + LTO on release builds: ship; the win is concentrated on `-L`
+## Finding 9 — PGO + LTO on release builds: LTO stays on (neutral); PGO dropped
 
-> **Provisional.** The wall-clock cells below are an indicative NEON run on a
-> non-quiet system (hyperfine flagged statistical outliers); they are to be
-> re-measured on a quiet system on **both** hosts (i7-8700 / AVX2 and Apple
-> Silicon / NEON) before the CHANGELOG numbers land. The falsification result
-> and the qualitative shape survive re-measurement; the second-decimal cell
-> values do not.
+Measured **2026-06-18** on the i7-8700 (AVX2, 12 logical CPUs, GCC 15.3.1).
+`v0.2.0` source built plain `-DCMAKE_BUILD_TYPE=Release` (no LTO, no PGO) as
+`./qwc-latest-release` — the "before" baseline. Candidate `./qwc` built from
+HEAD via the new `scripts/bench-sweep.sh`, configured three ways:
+(a) LTO-only (`-flto=auto`), (b) PGO + LTO with the legacy ~32 MiB synthetic
+training corpus and stage-1 LTO off, (c) PGO + LTO with stage-1 LTO on and
+training on the actual bench corpora (~1.5 GB across the six shapes).
+Hyperfine `--warmup 3 --runs 20`, no bench-prep (turbo / SMT / ASLR all on);
+ratios within each sweep are honest because both candidate and baseline see
+the same system state. Spec:
+[`qwc-companion/superpowers/specs/2026-06-17-pgo-lto-design.md`].
 
-Measured **2026-06-18** on Apple Silicon (arm64, NEON, 14 logical CPUs), warm
-page cache, `hyperfine --warmup 2 --runs 8`, against the `v0.2.0` release tag
-built as `qwc-latest-release` — which **predates all PGO/LTO scaffolding**, so
-it is a faithful "before" baseline (a plain `-O3` Release). Candidate is
-`./qwc` from `scripts/build-pgo.sh` (`-flto=thin` + `-fprofile-use`, profile
-from the `gen-data.py --pgo-training` corpus). Spec:
-`docs/superpowers/specs/2026-06-17-pgo-lto-design.md`.
+### TL;DR
 
-**TL;DR.** PGO+LTO ships. Two questions gated the decision: (1) is the bench
-sensitive enough to attribute a single-digit-percent codegen delta, and (2)
-where does the delta land. **(1)** was settled by falsification — neutering
-every NEON kernel (an early `return` before any byte is scanned) collapsed
-`-l -w` on `big.txt` from **48 ms to 6 ms (8.2×)**, output going to `0 0`; a
-benchmark that swings 8× when the kernel is deleted is measuring the kernel.
-**(2)** PGO+LTO is a wash on the read-bound reductions (`-l`, `-m`, `-c` ≈
-1.00×) and a consistent **~7–11 % on the longest-line family** (`-L`, `-L -m`,
-`-l -L`) across short / mixed / CJK corpora, with `-w` a smaller 1–6 %. The
-win lands exactly where profile-guided block layout has something to chew on —
-`-L`'s branchy per-byte state machine — and is absent where the kernel already
-runs at I/O speed.
+- **LTO is a wash but ships.** Every cell across all six corpora is within ±1%
+  of the v0.2.0 baseline. No measurable user-visible win; no measurable
+  regression. It stays on by default because (a) the binary-size delta is
+  trivial, (b) `release.yml` is already structured around it, and (c) it
+  costs nothing.
+- **PGO is dropped.** Across every training configuration and every corpus,
+  GCC PGO regresses the headline word-counting paths (default, `-w`, `-l -w`,
+  `-l -w -m`) by **7–10 %** while gaining 7–12 % on the rarer `-L` family.
+  It is consistently spending optimization budget on the wrong kernel.
+  Removed: `scripts/build-pgo.sh`, `QWC_PGO` in `CMakeLists.txt`,
+  `--pgo` on `bench-sweep.sh`, `--pgo-training` on `gen-data.py`,
+  and the release-workflow PGO step.
 
-**The falsification (why the delta is trustworthy).** The motivating worry was
-that PGO showed `1.00×` against `v0.2.0` everywhere first looked, which is
-indistinguishable from a bench that isn't measuring the binary at all. To
-separate "no effect" from "no measurement", every NEON kernel (`count`,
-`words`, `chars`, `maxLineLen`, `maxLineLenChars`) was temporarily shorted to
-return before touching the buffer, and the binary re-benched:
+### The LTO result (neutral across the matrix)
 
-| `-l -w` on `big.txt` (555 MiB, warm) | mean | output |
-|--------------------------------------|-----:|--------|
-| kernels neutered | 5.9 ms | `0 0` (proves the short fired) |
-| `v0.2.0` (real kernels) | 48.2 ms | correct |
-| `cat` (pure serial read) | 27.5 ms | — |
+LTO-only vs `v0.2.0`, ratio = baseline-mean / candidate-mean (>1 = candidate
+faster). Ten flag bundles × six corpora = 60 cells:
 
-The neutered binary is **8.2× faster** than the real one — the bench is
-sensitive. It is also faster than `cat`, which first read as "qwc must mmap
-and never fault the pages." It does not: qwc **`pread`s** each 256 KiB chunk
-into a reused per-thread buffer (`processfile.cpp:scanRange`, which explicitly
-avoids "faulting an mmap page-by-page"). The neutered binary beats `cat`
-because it `pread`s **in parallel across worker threads** while `cat` reads
-serially — confirmed by `qwc -l` (full read, trivial newline SIMD) at
-**6.7 ms** vs serial `cat` at 27.5 ms. That ~6 ms is the parallel-read floor,
-and it is why `-l` / `-m` / `-c` sit pinned at it: I/O-bound, with no compute
-headroom for PGO to recover.
+- 58 cells in `[0.94×, 1.02×]` — every cell within noise.
+- Two `-c` outliers at 0.94× — the `-c` mean is sub-millisecond (~0.7 ms),
+  so an absolute ±50 µs noise floor reads as a ±7% ratio. Hyperfine flags
+  statistical outliers in these cells.
+- No same-direction drift across cells in a corpus.
 
-**Wall-clock matrix** (provisional NEON; ms, `qwc` PGO+LTO vs `v0.2.0`,
-`vs rel` = `v0.2.0 / qwc`, >1 means PGO faster). `short-512MiB`, the cleanest
-case; the `-L`-family cells where the win lives are **bold**:
+LTO is correctness-neutral and perf-neutral on this kernel surface. The
+project is already at the per-thread-pread parallel-read floor on `-l` / `-m`
+/ `-c` (Finding 6), at DRAM bandwidth on `-L` (Finding 7), and at the
+per-byte-pipeline floor on `-w` (the per-byte regime Finding 6 also closed)
+— there is no remaining headroom on the candidate corpora for the linker's
+cross-TU inlining to recover.
 
-| flag | qwc (ms) | v0.2.0 (ms) | vs rel | bound by |
-|------|---------:|------------:|-------:|----------|
-| (default = -lwc) | 48.6 | 49.0 | 1.01× | word scan |
-| -l | 6.7 | 6.8 | 1.02× | parallel read |
-| -w | 47.7 | 50.4 | 1.06× | word state machine |
-| -c | 1.4 | 1.2 | 0.89× | fstat (noise; ~1 ms cell) |
-| -m | 6.7 | 6.7 | 1.01× | parallel read |
-| **-L** | **22.1** | **24.5** | **1.11×** | longest-line machine |
-| **-L -m** | **29.3** | **32.0** | **1.09×** | fused -L/-m |
-| -l -w | 48.2 | 48.8 | 1.01× | word scan |
-| **-l -L** | **22.7** | **24.9** | **1.10×** | -L dominates |
-| -l -w -m | 48.7 | 49.8 | 1.02× | word scan |
+### The PGO result (regresses the headline path, helps `-L`)
 
-The `-L` family repeats on the other two trained-shape corpora: `mixed-512MiB`
-`-L`/`-L -m`/`-l -L` = 1.09× / 1.07× / 1.08×; `cjk-short.txt` = 1.11× / 1.10× /
-1.10×. Nine `-L`-family cells across three corpora all land **1.07–1.11×**; the
-noise floor (visible in the ~1 ms `-c` cell bouncing 0.89–1.01×) only bites the
-sub-millisecond cells, so the `-L` band is signal, not jitter.
+PGO + LTO vs `v0.2.0`, same hyperfine budget. The pattern is identical
+across all three PGO configurations tried (the legacy 32 MiB training, the
+1.5 GB bench-corpora training, and stage-1 LTO on vs off):
 
-**Why `-L` benefits and the reductions don't.** `-l`, `-m`, `-c` are tight
-branchless SIMD reductions (or, for `-c`, an `fstat`); they already run at the
-parallel-`pread` floor, so there is no scalar control flow for profile-guided
-layout to improve. `-L` (`maxLineLen`) is the opposite — a per-byte scalar
-state machine for every 16-byte block that contains a newline, alongside the
-vectorized newline-free fast path — exactly the branchy code where PGO's block
-ordering and branch-weighting pay. `-w` sits between (the word kernel is mostly
-vectorized; the scalar UTF-8 punt is rare on these corpora), hence its smaller
-1–6 %. LTO's cross-TU inlining of the kernels into `scanBuffer` rides along on
-all of them but is, like PGO, only visible where the call isn't already
-amortized over a long scan.
+| flag class | PGO vs v0.2.0 | PGO vs LTO-only |
+|---|---|---|
+| default, `-w`, `-l -w`, `-l -w -m`, `-L -m` | 0.89–0.94× | **–7 to –10 pp** |
+| `-L`, `-l -L` | 1.07–1.13× | **+7 to +13 pp** |
+| `-l`, `-c`, `-m` | within noise | within noise |
 
-**Decision: ship.** PGO+LTO stays on by default for release builds
-(`scripts/build-pgo.sh`, wired into `release.yml` for both linux/x86_64 and
-macos/arm64). It is correctness-neutral (the `use` binary's counts match
-`v0.2.0` on every measured cell; unit tests + conformance gate it in CI), costs
-~60–120 s of release-build time and a `.text` growth of `<TBD>` %, and buys a
-reliable ~10 % on the `-L` family at the user's end. The earlier mental model —
-that the headline would show on `-lwc` / `-l -w` — was wrong; those cells are
-word-scan-bound and move ~1 %. The CHANGELOG headline cell is `-L`.
+Worked example (`big.txt`, 256 MiB, no bench-prep, ratio = baseline / qwc):
 
-**Pending (user, both hosts).** Re-measure on quiet systems on i7-8700 (AVX2)
-and Apple Silicon (NEON); the AVX2 kernels are different code, and the GCC PGO
-path (reads `.gcda` in place, no `llvm-profdata` merge) has not yet been
-exercised end-to-end. Fill the CHANGELOG `<TBD>` perf + `.text` numbers from the
-`-L` cells, then move the companion `TODO.md` bullet `Next → Done`.
+| flag | LTO-only | PGO+LTO (bench-corpora training) |
+|---|---|---|
+| (default) | 0.99× | **0.98×** |
+| `-w` | 0.99× | **0.89×** |
+| `-l -w` | 1.00× | **0.90×** |
+| `-l -w -m` | 0.99× | **0.90×** |
+| `-L` | 1.00× | **1.07×** |
+| `-l -L` | 1.00× | **1.08×** |
+| `-L -m` | 0.99× | **0.89×** |
 
-**Conformance.** The PGO+LTO build is bit-faithful: counts match `v0.2.0` on
-every cell measured, and the build is gated on the unit-test + conformance
-suites in `release.yml` (Linux conformance, both-platform unit tests).
+The word-path regression survives every PGO knob that was tried. It is the
+optimization choice GCC is asked to make, not a build artifact.
+
+### Why PGO biases toward `-L`
+
+PGO weights basic blocks by their measured execution count. `-L`
+(`maxLineLen`) is a tight per-byte scalar state machine alongside a
+vectorized newline-free fast path — small code, simple control flow, every
+byte goes through one of two well-defined blocks, counts accumulate cleanly.
+The word kernel is a UTF-8-aware run state machine over a vectorized ASCII
+classifier with a scalar punt path for 3- and 4-byte sequences — many more
+basic blocks, branchier, with the SIMD inner loop "running fewer times" per
+byte than `-L`'s per-byte machine. Per byte of training input, `-L`'s hot
+blocks rack up more "this is hot" signal than the word kernel's hot blocks
+do, and PGO follows the signal.
+
+### What we tried before dropping it
+
+1. **Stage-1 LTO on (match stage 4).** The original `build-pgo.sh` ran the
+   instrumented stage 1 with `QWC_LTO=OFF` on a defensive "some toolchain
+   combos corrupt the instrumented binary" comment. Flipping it on so the
+   profile counters attribute to the same symbol/inlining layout the final
+   build uses was the cheapest possible test — and it had no effect on
+   the regression shape.
+2. **Training on the bench corpora directly (~50× more training bytes).**
+   Replaced the synthetic 32 MiB six-shape training corpus with the actual
+   256 MiB bench corpora — same shapes, same flag matrix, just ~50× more
+   bytes per file. The hope was that the word kernel's hot loop would
+   accumulate enough samples to outweigh `-L`'s tighter loop in the
+   profile. It did not: the headline path stayed at –7 to –10 %, and a
+   couple of cells (`-L -m`) actually got worse.
+3. **A biased flag distribution (5× more weight on word-path flags during
+   training) was considered and rejected.** It would likely move the
+   tradeoff, but only by hand-managing PGO around its mistake. At that
+   point we are picking which flags get faster manually — not what PGO
+   is for.
+
+### Decision
+
+PGO is dropped. LTO stays on (default-on via `QWC_LTO` per
+[`CMakeLists.txt`]). Release builds become a plain
+`cmake -DCMAKE_BUILD_TYPE=Release` (LTO applied automatically per the
+`option(QWC_LTO ... ON)`); the release workflow no longer runs the
+three-stage PGO pipeline.
+
+Pre-existing Apple Silicon (NEON / Clang PGO) numbers in an earlier draft
+of this Finding showed ~10 % wins on the `-L` family there — but those
+numbers were explicitly provisional, taken on a non-quiet system with
+hyperfine statistical-outlier warnings, and the same `-L` shift relative
+to `-w` is visible there too. We are not re-running NEON on a quiet
+system: the AVX2 + GCC PGO result is bad enough to drop the tooling on
+both ISAs rather than maintain two separate PGO stories. If someone
+re-opens this on macOS/NEON later, the `gen-data.py --bench-corpora`
+generator and `scripts/bench-sweep.sh` flow still apply.
+
+### Conformance
+
+The dropped PGO+LTO build was bit-faithful in the brief window it
+existed: counts matched `v0.2.0` on every measured cell. The
+LTO-only candidate is identically bit-faithful (LTO does not change
+codegen semantics).
 
 ## Reproducing
 

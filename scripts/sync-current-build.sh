@@ -11,11 +11,6 @@
 # Uses a stable /tmp build dir so ninja can rebuild incrementally; near no-op
 # when nothing has changed (the cmake configure only re-runs if CMakeLists.txt
 # or the cache is stale).
-#
-# Set QWC_BENCH_PGO=1 to build the candidate the way a release ships it --
-# the full three-stage PGO+LTO pipeline (build-pgo.sh) instead of the plain
-# Release build below. Use this to benchmark PGO/LTO against a release that
-# predates it. The PGO path is a full multi-stage rebuild, hence opt-in.
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -23,18 +18,6 @@ cd "$repo_root"
 
 build_dir="/tmp/qwc-bench-build"
 target="$repo_root/qwc"
-
-# PGO/LTO mode: delegate to the three-stage orchestrator. Both paths emit to
-# ./qwc (CMake's RUNTIME_OUTPUT_DIRECTORY), so they are mutually exclusive per
-# run -- whichever ran last owns ./qwc. build-pgo.sh expects a *relative*
-# build dir (it derives the profile dir as $(pwd)/<dir>/...), and uses its own
-# build-pgo/ tree, leaving this script's incremental /tmp dir untouched.
-if [ "${QWC_BENCH_PGO:-0}" = "1" ]; then
-  echo "sync-current-build: QWC_BENCH_PGO=1 -> PGO+LTO build via build-pgo.sh"
-  "$repo_root/scripts/build-pgo.sh" build-pgo
-  echo "sync-current-build: $target now $("$target" --version 2>/dev/null | awk '{print $2}')"
-  exit 0
-fi
 
 if [ ! -f "$build_dir/build.ninja" ]; then
   echo "sync-current-build: configuring $build_dir..."
