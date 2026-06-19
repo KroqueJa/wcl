@@ -9,10 +9,7 @@ qwc*
 benchmarks/__pycache__
 
 # CMake build artifacts
-build/
-build-release
-build-pgo/
-build-wsl/
+build*
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
