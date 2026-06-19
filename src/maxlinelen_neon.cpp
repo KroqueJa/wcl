@@ -70,7 +70,7 @@ void maxLineLen(
   // needs the total.
   uint8x16_t contAcc = vdupq_n_u8( 0 );
   usize pendingBytes = 0;
-  unsigned pendingBlocks = 0;
+  u32 pendingBlocks = 0;
   const auto flushRun = [&]() {
     if ( pendingBytes != 0 ) {
       s.cur += pendingBytes - vaddlvq_u8( contAcc );  // non-continuation bytes
@@ -89,7 +89,7 @@ void maxLineLen(
       // newline-free run into `cur` first (the per-byte pass reads it for
       // prefix/maxComplete), then hand the block to the scalar state machine.
       if ( countChars ) flushRun();
-      for ( int i = 0; i < 16; ++i ) scalarStep( tmp[i], s, countChars );
+      for ( i32 i = 0; i < 16; ++i ) scalarStep( tmp[i], s, countChars );
     } else if ( countChars ) {
       // Newline-free block: add its continuation bytes to the running lanes
       // (vceqq yields 0xFF == -1 per hit, so vsubq adds 1). No reduction here.
@@ -164,7 +164,7 @@ void maxLineLenChars(
   // with no per-block reduction and no second traversal for chars().
   uint8x16_t contAcc = vdupq_n_u8( 0 );
   usize pendingBytes = 0;
-  unsigned pendingBlocks = 0;
+  u32 pendingBlocks = 0;
   const auto flushRun = [&]() {
     if ( pendingBytes != 0 ) {
       const usize nonCont = pendingBytes - vaddlvq_u8( contAcc );
@@ -182,7 +182,7 @@ void maxLineLenChars(
     if ( vmaxvq_u8( vceqq_u8( v, newline ) ) != 0 ) {
       flushRun();  // realize the run (into cur and charCount) before the
                    // newline
-      for ( int i = 0; i < 16; ++i ) stepBoth( tmp[i], s, charCount );
+      for ( i32 i = 0; i < 16; ++i ) stepBoth( tmp[i], s, charCount );
     } else {
       contAcc =
           vsubq_u8( contAcc, vceqq_u8( vandq_u8( v, contMask ), contTag ) );

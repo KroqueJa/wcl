@@ -183,7 +183,7 @@ std::optional<int> parseArgs( int argc, char** argv, Options& opt )
 
   // Parse leading options; the first non-flag argument begins the file list. A
   // bare "-" is treated as a file, not a flag.
-  int fileStart = 1;
+  i32 fileStart = 1;
   while ( fileStart < argc && argv[fileStart][0] == '-' &&
           argv[fileStart][1] != '\0' ) {
     const char* arg = argv[fileStart];
@@ -295,7 +295,7 @@ std::optional<int> parseArgs( int argc, char** argv, Options& opt )
     opt.bytes = true;
   }
 
-  for ( int i = fileStart; i < argc; ++i ) opt.files.push_back( argv[i] );
+  for ( i32 i = fileStart; i < argc; ++i ) opt.files.push_back( argv[i] );
   return std::nullopt;
 }
 

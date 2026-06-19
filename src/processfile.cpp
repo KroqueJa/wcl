@@ -104,7 +104,7 @@ char* threadBuffer()
 // one fd serves concurrent callers. The whole workload is computed on each
 // buffer before moving on -- one read, every requested counter.
 void scanRange(
-    const int fd, const usize start, const usize size, const usize fileSize,
+    i32 fd, const usize start, const usize size, const usize fileSize,
     const Workload* work, ScanState* out, char* buffer
 )
 {
@@ -133,7 +133,7 @@ void scanRange(
 // buffer. (Plain function rather than a lambda, and pointers rather than
 // references, so std::thread's by-value argument copying stays trivial.)
 void scanRangeThread(
-    const int fd, const usize start, const usize size, const usize fileSize,
+    const i32 fd, const usize start, const usize size, const usize fileSize,
     const Workload* work, ScanState* out
 )
 {
@@ -145,7 +145,7 @@ void scanRangeThread(
 // file (FIFO, character/block device, socket, /proc, ...). Bytes are tallied as
 // we read, since there is no reliable st_size. This is the boring,
 // always-correct path -- no threads, no pread, no size assumptions.
-Counts processStream( int fd, const Workload& w )
+Counts processStream( i32 fd, const Workload& w )
 {
   static constexpr usize WCTX = 3;  // multibyte window context per side
   thread_local char buffer[usize{ 128 } * 4096 + 2 * WCTX];
@@ -202,7 +202,7 @@ Counts processFile(
   // or static destructors, which would otherwise race with the live workers
   // (stderr is unbuffered so the message is already out, and no counts have
   // been printed yet).
-  int fd = open( filename, O_RDONLY );
+  i32 fd = open( filename, O_RDONLY );
   if ( fd < 0 ) {
     std::fprintf( stderr, "Error opening file: %s\n", filename );
     std::_Exit( 1 );
