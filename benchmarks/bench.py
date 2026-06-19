@@ -75,9 +75,12 @@ def validate_locales(locales: list) -> None:
                  f"with a subset of: {', '.join(sorted(raw_available))[:200]}...")
 
 
-def run_hyperfine(commands, warmup: int, runs: int) -> list:
+def run_hyperfine(commands, warmup: int, runs: int,
+                  env: dict | None = None) -> list:
     """Run one hyperfine invocation over `commands` (list of (label, cmdline));
-    return the per-command mean times in seconds, in the same order."""
+    return the per-command mean times in seconds, in the same order. If `env`
+    is given it replaces the child process environment; hyperfine inherits it
+    and propagates via --shell=none exec to every tool subprocess."""
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         json_path = tf.name
     # --shell=none: hyperfine parses the command itself and execs directly, so
@@ -87,7 +90,7 @@ def run_hyperfine(commands, warmup: int, runs: int) -> list:
             "--runs", str(runs), "--export-json", json_path]
     for label, cmdline in commands:
         argv += ["-n", label, cmdline]
-    subprocess.run(argv, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(argv, check=True, stdout=subprocess.DEVNULL, env=env)
     with open(json_path) as f:
         data = json.load(f)
     os.unlink(json_path)
@@ -209,24 +212,39 @@ def main() -> None:
                   file=sys.stderr)
 
     headers = [c[0] for c in columns]
-    rows = []  # each: {header: mean_seconds}
-    for flag in flags:
-        commands = []
-        for header, prefix in columns:
-            cmdline = " ".join( p for p in (prefix, flag, targets_str) if p )
-            commands.append((header, cmdline))
-        means = run_hyperfine(commands, args.warmup, args.runs)
-        rows.append(dict(zip(headers, means)))
+    # rows[(locale, flag)] = {header: mean_seconds}
+    rows: dict = {}
+    for locale in locales:
+        # Build a fresh env per locale: copy the parent env, then explicitly
+        # set LC_ALL and pop the lower-precedence LC_CTYPE / LANG so a stray
+        # value in the parent shell cannot corrupt the cell.
+        cell_env = os.environ.copy()
+        cell_env["LC_ALL"] = locale
+        cell_env.pop("LC_CTYPE", None)
+        cell_env.pop("LANG", None)
+        for flag in flags:
+            commands = []
+            for header, prefix in columns:
+                cmdline = " ".join(p for p in (prefix, flag, targets_str) if p)
+                commands.append((header, cmdline))
+            means = run_hyperfine(commands, args.warmup, args.runs, env=cell_env)
+            rows[(locale, flag)] = dict(zip(headers, means))
 
     if args.json_out:
-        payload = {(flag or "(default)"): row for flag, row in zip(flags, rows)}
+        # Nested by locale → flag → tool. Top-level locale key is the new axis;
+        # the inner shape matches the pre-locale-split sidecar exactly so
+        # downstream consumers (none today — verified by grep across the repo)
+        # only need to look one layer deeper to find the existing tool means.
+        payload: dict = {loc: {} for loc in locales}
+        for (locale, flag), row in rows.items():
+            payload[locale][flag or "(default)"] = row
         with open(args.json_out, "w") as f:
             json.dump(payload, f, indent=2)
 
-    render(flags, headers, rows, args.title, args.qwc_main_name)
+    render(locales, flags, headers, rows, args.title, args.qwc_main_name)
 
 
-def render(flags, headers, rows, title, main_label: str = "main") -> None:
+def render(locales, flags, headers, rows, title, main_label: str = "main") -> None:
     has_main = "main" in headers
     has_uu = "uu-wc" in headers
     has_gwc = "GNU wc" in headers
@@ -244,19 +262,27 @@ def render(flags, headers, rows, title, main_label: str = "main") -> None:
     if has_gwc:
         cols.append("vs GNU wc")
 
+    # Pad the locale field to the widest locale so the `/` divider lines up,
+    # matching the existing locale-flag row idiom in benchmarks/README.md
+    # Findings 7 and 8.
+    loc_width = max(len(loc) for loc in locales)
+
     lines = ["| " + " | ".join(cols) + " |",
              "|" + "|".join(["---"] * len(cols)) + "|"]
-    for flag, row in zip(flags, rows):
-        label = flag if flag else "(default)"
-        cells = [label] + [f"{row[h] * 1000:.1f}" for h in headers]
-        qwc = row["qwc"]
-        if has_main:
-            cells.append(fmt_ratio(row["main"], qwc))
-        if has_uu:
-            cells.append(fmt_ratio(row["uu-wc"], qwc))
-        if has_gwc:
-            cells.append(fmt_ratio(row["GNU wc"], qwc))
-        lines.append("| " + " | ".join(cells) + " |")
+    for locale in locales:
+        for flag in flags:
+            row = rows[(locale, flag)]
+            flag_label = flag if flag else "(default)"
+            label = f"{locale.ljust(loc_width)} / {flag_label}"
+            cells = [label] + [f"{row[h] * 1000:.1f}" for h in headers]
+            qwc = row["qwc"]
+            if has_main:
+                cells.append(fmt_ratio(row["main"], qwc))
+            if has_uu:
+                cells.append(fmt_ratio(row["uu-wc"], qwc))
+            if has_gwc:
+                cells.append(fmt_ratio(row["GNU wc"], qwc))
+            lines.append("| " + " | ".join(cells) + " |")
 
     table = "\n".join(lines)
     host = describe_host()
@@ -273,7 +299,9 @@ def render(flags, headers, rows, title, main_label: str = "main") -> None:
                     "faster). Measured with hyperfine; runner noise applies. "
                     "qwc's edge on bandwidth-bound flags (-l, -c) scales with "
                     "CPU count, so read those against the logical-CPU count "
-                    "above.\n\n")
+                    "above. Locale shown alongside flag — qwc adopts LC_CTYPE "
+                    "once at startup, so the C and C.UTF-8 rows are different "
+                    "code paths.\n\n")
             f.write(table + "\n")
 
 
