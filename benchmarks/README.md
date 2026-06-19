@@ -756,6 +756,112 @@ existed: counts matched `v0.2.0` on every measured cell. The
 LTO-only candidate is identically bit-faithful (LTO does not change
 codegen semantics).
 
+## Finding 10 — Strip-mining `scanBuffer` to L1-resident strips: null result
+
+Measured **2026-06-19** on the native Linux box (Intel i7-8700, 6C/12T,
+3.2 GHz; AVX2; kernel 7.0.12-arch1-1; root `/dev/sdb2` ext4) with warm
+page cache via `scripts/bench-sweep.sh`, plus a corroborating run on the
+Apple Silicon NEON box. Six 256 MiB corpora (`big.txt`, `long`, `many`,
+`mixed`, `short`, `single-line`) × the 10-cell `DEFAULT_FLAGS` grid =
+60 cells per host. Candidate is `scanBuffer` strip-mined into 32 KiB
+tiles per the `## Next` TODO bullet ("Strip-mine multi-counter scans");
+baseline is the `v0.2.0` release binary. Loop reordering only — the
+carries thread through one `ScanState` exactly as they did across the
+existing per-buffer seams (any chunk > `BUF_SIZE` already drove the
+inner kernel sequence repeatedly on one `ScanState`), so the candidate
+is bit-identical to main by construction.
+
+**TL;DR.** The predicted mechanism — "Finding 6 one cache level up: the
+second kernel reloads its strip from L2, so tile the buffer to L1 and
+run all enabled kernels per strip" — does not surface at wall-clock on
+either host. Across the 60-cell AVX2 grid, 59 cells sit in **0.98–1.02×**
+of `v0.2.0`; the lone outlier is `big.txt` (default) at 1.10×, and it is
+contradicted on the same file by `-l` (0.95×) and `-w` (0.98×). A real
+strip-mining win would be consistent across the bundle and the
+single-counter cells of the same corpus, not concentrated on one cell.
+NEON shows the same flat shape across all corpora and flags (no cell
+outside 0.98–1.02×). Hyperfine emitted 2–5 statistical-outlier warnings
+on every AVX2 corpus log this round — the bench harness was noisier than
+the Finding 7/8 runs were — but the cross-corpus pattern is identical
+on the quieter NEON box, so the null result is load-bearing even with
+the noise discount. Null result: the un-tiled single-pass `scanBuffer`
+stays.
+
+**Wall-clock matrix** (ms, `qwc` candidate vs `v0.2.0` release, `vs v0.2.0`
+is the campaign signal). The `(default)` row is the bundle the proposal
+predicted would benefit most; the `-l -w`, `-l -w -m`, `-l -L` rows are
+the other multi-counter cells the L1-tiling story applies to.
+
+`mixed-256MiB` (historical default corpus, the most-common-case cell):
+
+| flag        | qwc (ms) | v0.2.0 (ms) | vs v0.2.0 |
+|-------------|---------:|------------:|----------:|
+| (default)   |     69.5 |        70.0 |     1.01× |
+| -l          |     11.2 |        11.1 |     1.00× |
+| -w          |     70.2 |        69.2 |     0.99× |
+| -c          |      0.9 |         0.9 |     1.00× |
+| -m          |     11.4 |        11.3 |     0.99× |
+| -L          |     37.4 |        37.4 |     1.00× |
+| -L -m       |     51.0 |        51.2 |     1.00× |
+| -l -w       |     69.7 |        70.8 |     1.02× |
+| -l -L       |     38.4 |        38.6 |     1.00× |
+| -l -w -m    |     71.2 |        71.4 |     1.00× |
+
+`big.txt` (the only corpus with a > 1.05× cell — and it doesn't generalize):
+
+| flag        | qwc (ms) | v0.2.0 (ms) | vs v0.2.0 |
+|-------------|---------:|------------:|----------:|
+| **(default)**  | **70.4** | **77.4** | **1.10×** |
+| -l          |     12.2 |        11.6 |     0.95× |
+| -w          |     71.4 |        70.0 |     0.98× |
+| -c          |      0.9 |         0.9 |     1.02× |
+| -m          |     11.5 |        11.4 |     0.99× |
+| -L          |     37.6 |        37.8 |     1.00× |
+| -L -m       |     51.4 |        51.2 |     1.00× |
+| -l -w       |     69.9 |        70.3 |     1.01× |
+| -l -L       |     38.6 |        38.9 |     1.01× |
+| -l -w -m    |     71.0 |        71.7 |     1.01× |
+
+`long-256MiB`, `many-256MiB`, `short-256MiB`, `single-line-256MiB`: same
+shape as `mixed-256MiB` — `(default)` flat at 1.00–1.01×, every other
+cell within 0.98–1.02× of `v0.2.0`, no cell breaks the 1.02× ceiling.
+The four-corpus matrices are in `logs/bench-{long,many,short,single-line}.log`;
+omitted from this finding for brevity since they don't differ from the
+`mixed` row above.
+
+The `big.txt` `(default)` cell is the one place the strip-mining
+proposal would have shown up if real. It does not survive the same-corpus
+consistency check: the bundle's component kernels (`-l` 0.95×, `-w`
+0.98×, the related multi-counter `-l -w` 1.01× and `-l -w -m` 1.01×)
+all sit at or below `v0.2.0`. The 1.10× is a single-cell measurement
+artifact (two outlier warnings in the corresponding hyperfine log), not
+a workload class the tiling unlocks.
+
+**No perf counters this round.** Finding 7 and Finding 8 both pinned
+their nulls with `perf stat` (instructions/byte, branches, branch-misses,
+LLC-load-misses) before deciding. This finding does not — the wall-clock
+shape across 120 cells (60 × 2 ISAs) was flat enough, and consistent
+enough across two unrelated microarchitectures, that walking the
+mechanism counters wouldn't change the decision. The cost the
+proposal would have had to recover — Finding 6's L2-load second-pass
+trip — was wall-clock-flat across the entire matrix; the per-strip
+overhead (extra loop iteration count, extra kernel-dispatch cascade
+per strip) at minimum equals that saving on these hosts. A reopening
+would want to start by establishing whether that saving is even
+visible at the binary on any corpus / ISA, not by trying a smaller
+strip size.
+
+**Decision.** Strip-mining `scanBuffer` is dropped. `scanBuffer` stays
+as the single per-buffer kernel cascade it was on `v0.2.0`. The
+candidate was bit-identical to main by construction; the conformance
+suite was not re-run as a separate gate (loop reordering with the
+same `ScanState` cannot perturb counts), but the wall-clock matrix is
+itself a 60-cell consistency check across the `DEFAULT_FLAGS` grid.
+No separate design spec exists — the hypothesis lived only as the
+`## Next` TODO bullet ("Strip-mine multi-counter scans") and the
+throwaway `scripts/strip-sweep.sh`; both are removed alongside this
+writeup. The companion roadmap entry moves to `## Not doing`.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

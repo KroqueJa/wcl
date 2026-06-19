@@ -47,13 +47,13 @@ struct ScanState
   LineScan line;      // longest-line carry within this range
 };
 
-// Run every requested counter over one strip [ownedBegin, ownedEnd) of a
-// buffer, threading the carries in `s`. Bytes outside the strip are context for
-// the word scanner only (multibyte separator windows may peek up to WCTX bytes
-// either side); every other counter sees just the strip's bytes, so nothing is
-// double-counted. Each counter scans the (L1-resident) strip independently; the
-// data is read from the file only once, by the caller.
-inline void scanStrip(
+// Run every requested counter over the owned region [ownedBegin, ownedEnd) of
+// one buffer, threading the carries in `s`. Bytes outside the owned region are
+// context for the word scanner only (multibyte separator windows may peek up
+// to WCTX bytes either side); every other counter sees just the owned bytes,
+// so nothing is double-counted. Each counter scans the (cache-resident) buffer
+// independently; the data is read from the file only once, by the caller.
+inline void scanBuffer(
     const char* buf, const usize len, const usize ownedBegin,
     const usize ownedEnd, const Workload& w, ScanState& s
 )
@@ -87,33 +87,6 @@ inline void scanStrip(
 // L2 on every host we measured; 256 KiB stays L2-resident).
 constexpr usize BUF_SIZE = usize{ 256 } << 10;  // 256 KiB
 constexpr usize WCTX = 3;  // multibyte window context per side
-
-// Strip size for loop tiling inside scanBuffer: the owned region is scanned in
-// strips this size so each strip stays L1-resident across all enabled kernels
-// (Finding 6's L2 mechanism re-applied one cache level up). Swept via
-// -DQWC_DEFINES=QWC_STRIP_SIZE=<bytes> per the 2026-06-19 strip-mine design;
-// the default below is baked to the sweep winner in a follow-up.
-#ifndef QWC_STRIP_SIZE
-#define QWC_STRIP_SIZE ( usize{ 32 } << 10 )  // 32 KiB (placeholder)
-#endif
-
-// Strip-mine the owned region: walk [ownedBegin, ownedEnd) in QWC_STRIP_SIZE
-// strips, running every enabled kernel over each strip before advancing, so the
-// strip stays L1-resident across kernels. Pure loop reordering -- the carries
-// thread through `s` exactly as they already do across the buffer seams
-// scanRange produces (any chunk > BUF_SIZE already drives scanStrip repeatedly
-// on one ScanState), so the result is bit-identical to one scanStrip call over
-// the whole region. An empty region scans nothing, as before.
-inline void scanBuffer(
-    const char* buf, const usize len, const usize ownedBegin,
-    const usize ownedEnd, const Workload& w, ScanState& s
-)
-{
-  for ( usize off = ownedBegin; off < ownedEnd; off += QWC_STRIP_SIZE ) {
-    const usize stripEnd = std::min( off + QWC_STRIP_SIZE, ownedEnd );
-    scanStrip( buf, len, off, stripEnd, w, s );
-  }
-}
 
 // The scan buffer is per worker thread and reused across every file that
 // thread processes. Small files dominate some workloads (thousands of opens
