@@ -104,37 +104,45 @@ def walltime_phase(args) -> None:
     corpora = [("big", args.big), ("many", args.many)]
     rows: List[Dict] = []
 
-    for corpus_label, corpus_path in corpora:
-        tgt = build_targets(corpus_path, args.out)
-        for flag in args.flags:
-            for topo_label, topo_prefix in args.topologies:
-                # One hyperfine invocation = one row in the output: qwc at every
-                # size, plus wc and uu-wc, all benchmarked within the same warm
-                # cache pass for apples-to-apples comparison.
-                commands: List[Tuple[str, str]] = []
-                for kib in args.sizes:
-                    env = f"QWC_BUF_SIZE={fmt_size(kib)} "
-                    label = f"qwc@{fmt_size(kib)}"
-                    # env -- sets the env for the one binary invocation;
-                    # hyperfine spawns each command directly so env survives.
-                    cmd = (f"{topo_prefix}env {env}{args.qwc} {flag} {tgt['qwc']}").strip()
-                    commands.append((label, cmd))
-                # Comparators, same topology, same hyperfine warmup pass.
-                commands.append(("wc", f"{topo_prefix}{args.gwc} {flag} {tgt['wc']}".strip()))
-                commands.append(("uu-wc", f"{topo_prefix}{args.uuwc} {flag} {tgt['uuwc']}".strip()))
+    for locale in args.locales:
+        for corpus_label, corpus_path in corpora:
+            tgt = build_targets(corpus_path, args.out)
+            for flag in args.flags:
+                for topo_label, topo_prefix in args.topologies:
+                    # One hyperfine invocation = one row in the output: qwc at every
+                    # size, plus wc and uu-wc, all benchmarked within the same warm
+                    # cache pass for apples-to-apples comparison.
+                    commands: List[Tuple[str, str]] = []
+                    for kib in args.sizes:
+                        # env -- sets the env for the one binary invocation;
+                        # hyperfine spawns each command directly so env survives.
+                        # LC_ALL pins the locale axis (the kernel branch in
+                        # words/maxLineLen is decided once at qwc startup).
+                        env = f"QWC_BUF_SIZE={fmt_size(kib)} LC_ALL={shlex.quote(locale)} "
+                        label = f"qwc@{fmt_size(kib)}"
+                        cmd = (f"{topo_prefix}env {env}{args.qwc} {flag} {tgt['qwc']}").strip()
+                        commands.append((label, cmd))
+                    # Comparators, same topology, same hyperfine warmup pass,
+                    # same locale (so the qwc-vs-comparator ratio compares
+                    # like-for-like inputs).
+                    cmp_env = f"LC_ALL={shlex.quote(locale)} "
+                    commands.append(("wc",
+                        f"{topo_prefix}env {cmp_env}{args.gwc} {flag} {tgt['wc']}".strip()))
+                    commands.append(("uu-wc",
+                        f"{topo_prefix}env {cmp_env}{args.uuwc} {flag} {tgt['uuwc']}".strip()))
 
-                means = hyperfine_means(commands, args.warmup, args.runs)
-                row = {
-                    "corpus": corpus_label,
-                    "flag": flag,
-                    "topology": topo_label,
-                    "results": dict(zip([c[0] for c in commands], means)),
-                }
-                rows.append(row)
-                # Echo progress so a slow sweep is debuggable.
-                print(f"[walltime] {corpus_label} {flag} {topo_label}: "
-                      + " ".join(f"{k}={v*1000:.1f}ms" for k, v in row["results"].items()),
-                      file=sys.stderr)
+                    means = hyperfine_means(commands, args.warmup, args.runs)
+                    row = {
+                        "locale": locale,
+                        "corpus": corpus_label,
+                        "flag": flag,
+                        "topology": topo_label,
+                        "results": dict(zip([c[0] for c in commands], means)),
+                    }
+                    rows.append(row)
+                    print(f"[walltime] {locale} {corpus_label} {flag} {topo_label}: "
+                          + " ".join(f"{k}={v*1000:.1f}ms" for k, v in row["results"].items()),
+                          file=sys.stderr)
 
     write_walltime_markdown(rows, args.sizes, args.out)
     with open(os.path.join(args.out, "sweep-walltime.json"), "w") as f:
@@ -142,14 +150,14 @@ def walltime_phase(args) -> None:
 
 
 def write_walltime_markdown(rows: List[Dict], sizes: List[int], out_dir: str) -> None:
-    """One table per (corpus, topology), rows by flag, columns by size + comparators."""
-    by_group: Dict[Tuple[str, str], List[Dict]] = {}
+    """One table per (locale, corpus, topology), rows by flag, columns by size + comparators."""
+    by_group: Dict[Tuple[str, str, str], List[Dict]] = {}
     for r in rows:
-        by_group.setdefault((r["corpus"], r["topology"]), []).append(r)
+        by_group.setdefault((r["locale"], r["corpus"], r["topology"]), []).append(r)
 
     lines: List[str] = ["# qwc scan-buffer sweep: wall-clock (ms)\n"]
-    for (corpus, topo), group in by_group.items():
-        lines.append(f"## corpus={corpus} · topology={topo}\n")
+    for (locale, corpus, topo), group in by_group.items():
+        lines.append(f"## locale={locale} · corpus={corpus} · topology={topo}\n")
         size_labels = [f"qwc@{fmt_size(k)}" for k in sizes]
         cols = ["flag"] + size_labels + ["wc", "uu-wc"]
         lines.append("| " + " | ".join(cols) + " |")
@@ -270,6 +278,11 @@ def main() -> None:
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--runs", type=int, default=10)
     ap.add_argument("--phase", choices=["walltime", "perf", "both"], default="both")
+    ap.add_argument("--locales", default="C,C.UTF-8",
+                    help="comma-separated LC_ALL values to measure each cell "
+                         "under. Default 'C,C.UTF-8' runs both qwc kernel "
+                         "families. Pass a single value (e.g. 'C') for legacy "
+                         "single-locale sweeps.")
     args = ap.parse_args()
 
     if not have(args.gwc):
@@ -281,6 +294,9 @@ def main() -> None:
     args.sizes = parse_sizes(args.sizes)
     args.flags = [f.strip() for f in args.flags.split(",") if f.strip()]
     args.topologies = DEFAULT_TOPOLOGIES
+    args.locales = [loc.strip() for loc in args.locales.split(",") if loc.strip()]
+    if not args.locales:
+        sys.exit("--locales: empty list")
 
     if args.phase in ("walltime", "both"):
         walltime_phase(args)
