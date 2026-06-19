@@ -76,10 +76,12 @@ static std::vector<Counts> mapFiles(
   const usize numFiles = opt.files.size();
   std::vector<Counts> output( numFiles );
 
-  // One worker (or one file): run inline. Spawning a pool just to hand a single
-  // thread the whole glob adds spawn+join latency for no parallelism. Results
-  // are still stored by index, so output order matches the input order.
-  if ( numThreads <= 1 || numFiles <= 1 ) {
+  // One worker: run inline. Spawning a pool just to hand a single thread the
+  // whole glob adds spawn+join latency for no parallelism. The numFiles==1
+  // case is handled by main's single-file short-circuit before mapFiles is
+  // ever called, so this branch is the small-no-scan-glob path only. Results
+  // are stored by index, so output order matches the input order.
+  if ( numThreads <= 1 ) {
     for ( usize i = 0; i < numFiles; ++i )
       output[i] = processFile( opt.files[i], work, opt.bytesPerThread );
     return output;
@@ -155,6 +157,17 @@ int main( int argc, char** argv )
 
   if ( !collectFiles( opt ) ) return 1;
   const usize numFiles = opt.files.size();
+
+  // Single-file short-circuit: skip mapFiles' one-element vector allocation
+  // AND printResults' total / iota / per-row / sort cascade (all no-ops on
+  // one file anyway). Sort, --top and --reverse on a single file are
+  // identity operations, so collapsing them is semantics-preserving.
+  if ( numFiles == 1 ) {
+    const Columns cols = selectedColumns( opt );
+    const Counts c = processFile( opt.files[0], work, opt.bytesPerThread );
+    printCounts( opt, cols, c, opt.files[0] );
+    return 0;
+  }
 
   // Choose the worker count before spawning anything. A bytes-only workload is
   // a bare fstat per file, so it scales workers with the glob (one per
