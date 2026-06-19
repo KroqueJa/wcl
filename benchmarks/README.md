@@ -862,6 +862,151 @@ No separate design spec exists — the hypothesis lived only as the
 throwaway `scripts/strip-sweep.sh`; both are removed alongside this
 writeup. The companion roadmap entry moves to `## Not doing`.
 
+## Finding 11 — io_uring depth-2 read/scan overlap: null result, Finding 6 ate the slack
+
+Measured **2026-06-19** on the native Linux box (Intel i7-8700, 6C/12T,
+3.2 GHz; L1d 32 KiB/core, **L2 256 KiB/core**, L3 12 MiB; AVX2; kernel
+7.0.12-arch1-1; root `/dev/sdb2` ext4) with warm page cache via an
+ad-hoc per-corpus driver around `benchmarks/bench.py` (same protocol as
+`scripts/bench/sweep.sh` but with the `--qwc-main` slot bound to a
+QWC_URING=OFF build of the same working tree, so the A/B is uring vs
+pread on byte-identical kernels rather than against the latest release).
+Six 256 MiB corpora (`big.txt`, `long`, `many`, `mixed`, `short`,
+`single-line`) × the 10-cell `DEFAULT_FLAGS` grid × `{LC_ALL=C,
+C.UTF-8}` × `{12-thread, taskset -c 0-3}` = **240 cells**. Candidate is
+the depth-2 io_uring scan path per spec
+`superpowers/specs/2026-06-19-io-uring-overlap-design.md`: two 128 KiB
+scan halves, `IOSQE_ASYNC` on every SQE, raw `io_uring_setup` /
+`io_uring_enter` syscalls (no liburing). Baseline is the same working
+tree with `QWC_URING=OFF` so the dispatcher falls through to the
+pre-existing pread loop, the only difference between binaries.
+Conformance was already green on both binaries (`fuzz 1000`, two
+separate runs).
+
+**TL;DR.** 142 of 240 cells regress by more than 3 %; 1 improves (a
+1.03× outlier on the sub-4 ms stat-only `-c` cell, dominated by
+fstat-only fixed cost); the remaining 97 are flat. The headline
+big-file warm 12-thread `-l` lands at **0.775×** (15.06 ms vs
+11.67 ms pread) and the bundled-default `(default)` cell at 0.924× C
+/ 0.957× C.UTF-8 — i.e. the *exact* cells the design targeted are
+where the regression is worst. The 4-vCPU mimic shows the same shape
+at smaller magnitude (`-l` 0.858× on big), because pread there has
+less head room and the per-submission ring overhead is a smaller
+fraction of a longer baseline. Bandwidth-bound pure-stat cells (`-c`,
+`-m` under C — both fstat-only, no scan path) sit at 1.00× across the
+matrix; a useful sanity check that the dispatcher gate is doing its
+job. Null result: the io_uring path is removed; pread stays.
+
+**Mechanism.** The spec's prediction was that `IOSQE_ASYNC` would hide
+the kernel's `copy_to_user` behind the AVX2 scan on a different
+logical CPU. That prediction assumed the copy was *measurably
+expensive* in the first place. Finding 6 (2026-06-13) already closed
+that door by tuning the per-thread scan buffer down to 256 KiB so the
+copy and the scan both stay L2-resident — at which point
+`copy_to_user` for one 128 KiB submission is on the order of an L2
+memcpy of 128 KiB, well under the cost of a single context switch
+into a freshly-woken iowq worker. The io_uring path then trades a
+near-free L2 memcpy for **two context switches per 128 KiB chunk**
+(qwc-thread → iowq worker → qwc-thread again at completion), and the
+trade is plainly the wrong direction.
+
+The size-of-regression-per-cell ordering makes the mechanism vivid:
+
+- **Worst regressions:** the cells where pread is *fastest* — `-l`
+  (newline-counting AVX2 SIMD streaming bytes at near-DRAM bandwidth)
+  drops to 0.78× because the per-128-KiB ring overhead is a huge
+  relative fraction of a 12 ms baseline.
+- **Mid regressions:** the bundled cells (`(default)`, `-w`, `-lw`)
+  drop to 0.92-0.96× because they have more per-byte work, so the
+  same absolute ring overhead is a smaller relative fraction.
+- **Flat:** the no-scan cells (`-c`, `-m` in C) at 1.00× — the
+  dispatcher routes those past the io_uring path entirely (no
+  scanBuffer call), confirming the gate works as intended.
+
+Same story shows up in the spec design's own hedge: dropping
+`IOSQE_ASYNC` was floated as a rescue but rules itself out — without
+ASYNC the warm-cache reads complete inline in `io_uring_enter` and
+the depth-2 ping-pong collapses to "serialised pread with extra
+syscall ceremony," which is at best zero gain and at worst still a
+net loss to the syscall overhead. There is no salvage path that
+recovers the missing copy-to-user cost the design was supposed to
+hide, because that cost is no longer there to hide.
+
+**Wall-clock matrix, `big.txt` warm 12-thread** (the corpus the
+overlap mechanism was most likely to win on; uring vs pread in ms,
+ratio = pread / uring so > 1 means uring wins):
+
+| flag        | uring (C) | pread (C) | ratio | uring (C.UTF-8) | pread (C.UTF-8) | ratio |
+|-------------|----------:|----------:|------:|----------------:|----------------:|------:|
+| (default)   |      49.4 |      45.7 | 0.92× |            80.0 |            76.6 | 0.96× |
+| -l          |      15.1 |      11.7 | **0.78×** |        15.5 |            12.0 | **0.78×** |
+| -w          |      47.3 |      44.5 | 0.94× |            78.7 |            74.1 | 0.94× |
+| -c          |       0.9 |       0.9 | 0.99× |             0.9 |             0.9 | 0.99× |
+| -m          |       0.9 |       0.9 | 1.00× |            16.5 |            13.0 | 0.79× |
+| -L          |      41.3 |      37.5 | 0.91× |            41.6 |            37.5 | 0.90× |
+| -L -m       |      40.2 |      37.8 | 0.94× |            53.3 |            49.1 | 0.92× |
+| -l -w       |      48.8 |      45.6 | 0.94× |            78.5 |            75.3 | 0.96× |
+| -l -L       |      42.5 |      40.0 | 0.94× |            42.0 |            38.9 | 0.93× |
+| -l -w -m    |      50.9 |      51.4 | 1.01× |            79.0 |            76.4 | 0.97× |
+
+**Wall-clock matrix, `many` warm 12-thread** (the regression
+guardrail, since the spec's contingent V2 idea was a per-invocation
+gate for many-tiny-files):
+
+| flag        | uring (C) | pread (C) | ratio | uring (C.UTF-8) | pread (C.UTF-8) | ratio |
+|-------------|----------:|----------:|------:|----------------:|----------------:|------:|
+| (default)   |      46.3 |      41.0 | 0.89× |            70.5 |            67.4 | 0.96× |
+| -l          |      16.6 |      12.8 | **0.77×** |        16.6 |            12.9 | **0.78×** |
+| -w          |      44.4 |      39.6 | 0.89× |            69.5 |            65.5 | 0.94× |
+| -c          |       3.3 |       3.3 | 1.01× |             3.3 |             3.3 | 1.00× |
+| -m          |       3.3 |       3.2 | 0.99× |            17.6 |            14.0 | 0.80× |
+| -L          |      39.5 |      34.8 | 0.88× |            40.3 |            34.8 | 0.86× |
+| -L -m       |      40.1 |      34.9 | 0.87× |            50.9 |            44.7 | 0.88× |
+| -l -w       |      45.8 |      40.9 | 0.89× |            72.7 |            68.2 | 0.94× |
+| -l -L       |      40.4 |      36.1 | 0.89× |            41.1 |            36.0 | 0.88× |
+| -l -w -m    |      46.2 |      41.0 | 0.89× |            72.1 |            68.0 | 0.94× |
+
+The many-files row is the V2-gate falsifier: the spec carved out an
+"ambiguous (gate)" branch in §5 for the case where big-file improved
+and many-files regressed. Many-files regressed regardless; big-file
+also regressed; there is no remaining ambiguity to gate around.
+
+`long`, `mixed`, `short`, `single-line` all show the same shape as
+`big`; the per-corpus tables are in the campaign artifacts at
+`/tmp/uring-results/` (`{corpus}-warm-{12t,4t}.{log,json}`) and not
+reproduced here.
+
+**4-vCPU mimic** (`taskset -c 0-3`): smaller magnitudes everywhere —
+`big -l` regresses to 0.86× instead of 0.78×, headline `(default)`
+sits flat at 1.00× — because the pread baseline is itself slower at
+4 vCPUs (less concurrency, more serialised IO) so the same
+per-submission ring overhead is a smaller fraction of a longer
+budget. The shape is the same as 12-thread; the conclusion would
+not change.
+
+**No perf counters this round.** Like Finding 10, the wall-clock
+matrix is uniform enough and the mechanism story is concrete enough
+(post-Finding-6 warm-cache copy_to_user is an L2 memcpy; iowq
+per-submission context switches are not) that pinning the regression
+to `context-switches` and the absent improvement to LLC counters
+would not change the decision. A reopening would want to start by
+establishing whether the warm-cache `copy_to_user` is even visible
+at the binary on any corpus — Finding 6 already collapsed that, and
+no new mechanism has emerged that would re-expose it.
+
+**Decision.** The io_uring scan path is dropped. The CMake
+`QWC_URING` option, the `src/processfile_uring.cpp` translation unit,
+the `include/processfile_uring.h` declaration, the
+`src/processfile_internal.h` cross-TU header, the dispatcher branch
+in `src/processfile.cpp`, the `tests/processfile_uring_test.cpp`
+divergence test, and the `tests/CMakeLists.txt` plumbing are all
+removed alongside this writeup; the `qwc` and `qwc-scalar` targets
+return to the pre-branch shape. Spec and plan stay as a historical
+record at `superpowers/specs/2026-06-19-io-uring-overlap-design.md`
+and `superpowers/plans/2026-06-19-io-uring-overlap.md`. The
+companion roadmap entry moves to `## Not doing`. Linux-only campaign
+(macOS was carved out from the start), no NEON port implication.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers
