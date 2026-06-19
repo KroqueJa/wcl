@@ -96,7 +96,22 @@ static std::vector<Counts> mapFiles(
 int main( int argc, char** argv )
 {
   Options opt;
-  if ( const std::optional<int> rc = parseArgs( argc, argv, opt ) ) return *rc;
+
+  // Pre-parse fast paths: bare `qwc` (stdin) and `qwc onefile` (a single
+  // non-flag argument) both fall through parseArgs straight to the no-flag
+  // default (lines + words + bytes). Setting those flags here and skipping
+  // parseArgs tightens the setup path on the two most common shapes.
+  // Anything starting with '-' (including bare '-', '--', and any flag)
+  // takes the regular parseArgs path so the wc-style stdin convention and
+  // every flag combination stay handled exactly as today.
+  if ( argc == 1 ) {
+    opt.lines = opt.words = opt.bytes = true;
+  } else if ( argc == 2 && argv[1][0] != '-' ) {
+    opt.lines = opt.words = opt.bytes = true;
+    opt.files.push_back( argv[1] );
+  } else if ( const std::optional<int> rc = parseArgs( argc, argv, opt ) ) {
+    return *rc;
+  }
 
   // Adopt the environment's locale once, before any worker threads exist.
   // setlocale(LC_CTYPE, "") performs the POSIX LC_ALL > LC_CTYPE > LANG
