@@ -3,14 +3,21 @@
 # bench corpora and prints per-step wall time.
 #
 # Default: LTO candidate, qwc + latest-release columns only (no uu-wc /
-# GNU wc), ~2 min total on the i7-8700.
+# GNU wc), both locales (LC_ALL=C and LC_ALL=C.UTF-8) per
+# benchmarks/bench.py's --locales default. ~6 min total on the i7-8700
+# (each cell runs once per locale; qwc adopts LC_CTYPE once at startup
+# so the two locales exercise different kernel paths).
 #
 # Flags:
-#   --with-competitors   re-add uu-wc + GNU wc columns. Adds ~3 min.
+#   --with-competitors   re-add uu-wc + GNU wc columns. Adds ~6 min
+#                        (GNU wc -m under C.UTF-8 is ~90x slower than
+#                        under C).
 #   --no-prep            skip 'sudo bench-prep apply' (default: apply on
 #                        Linux; macOS skips automatically).
 #
 # Override per-cell budget with WARMUP / RUNS env vars (defaults: 3 / 20).
+# Single-locale: pass --locales c (or c.utf-8) through bench.py via
+# editing the invocation below — there is no shell-level flag for it.
 #
 # Output: per-corpus rendered table to stdout + logs/<name>.json sidecars.
 # logs/ is gitignored.
