@@ -46,6 +46,35 @@ def have(cmd: str) -> bool:
     return shutil.which(shlex.split(cmd)[0]) is not None
 
 
+def validate_locales(locales: list) -> None:
+    """Hard-error if `locale -a` is available and any requested locale isn't
+    listed. Warn-and-proceed if `locale -a` itself isn't available (musl /
+    minimal containers). Prevents silent fall-through to the C default
+    mid-sweep when the user typo'd a locale name.
+
+    `locale -a` output varies by distro: glibc canonicalises 'C.UTF-8' as
+    'C.utf8', musl writes 'C.UTF-8' as-is, macOS writes 'C.UTF-8'. Compare
+    lowercased and with '-' / '_' stripped so the aliases match."""
+    try:
+        proc = subprocess.run(["locale", "-a"], capture_output=True,
+                              text=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print("note: 'locale -a' unavailable; skipping locale validation",
+              file=sys.stderr)
+        return
+
+    def norm(s: str) -> str:
+        return s.lower().replace("-", "").replace("_", "")
+
+    raw_available = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    available_norm = {norm(loc) for loc in raw_available}
+    missing = [loc for loc in locales if norm(loc) not in available_norm]
+    if missing:
+        sys.exit(f"missing locale(s) on this host: {', '.join(missing)}. "
+                 f"Install with localedef / locale-gen, or pass --locales "
+                 f"with a subset of: {', '.join(sorted(raw_available))[:200]}...")
+
+
 def run_hyperfine(commands, warmup: int, runs: int) -> list:
     """Run one hyperfine invocation over `commands` (list of (label, cmdline));
     return the per-command mean times in seconds, in the same order."""
@@ -123,6 +152,11 @@ def main() -> None:
                     help="skip uu-wc and GNU wc columns (and their autodetect). "
                          "Used by scripts/bench-sweep.sh for the fast inner-loop "
                          "sweep; the per-corpus wrappers keep them by default.")
+    ap.add_argument("--locales", default="C,C.UTF-8",
+                    help="comma-separated LC_ALL values to measure each cell "
+                         "under. Default 'C,C.UTF-8' runs both qwc kernel "
+                         "families. Pass a single value (e.g. 'C') for legacy "
+                         "single-locale runs.")
     ap.add_argument("--data", required=True,
                     help="corpus file, or a directory (all files in it are counted)")
     ap.add_argument("--warmup", type=int, default=1)
@@ -132,6 +166,11 @@ def main() -> None:
     ap.add_argument("--title", default="qwc benchmark",
                     help="heading for the rendered table / step summary")
     args = ap.parse_args()
+
+    locales = [loc.strip() for loc in args.locales.split(",") if loc.strip()]
+    if not locales:
+        sys.exit("--locales: empty list")
+    validate_locales(locales)
 
     flags = ([f.strip() for f in args.flags.split(",")] if args.flags
              else DEFAULT_FLAGS)
