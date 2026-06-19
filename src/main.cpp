@@ -132,7 +132,9 @@ int main( int argc, char** argv )
   // No file arguments: count standard input. wc prints just the padded
   // count(s), with no name.
   if ( opt.files.empty() ) {
-    printCounts( opt, processFile( "", work, opt.bytesPerThread ), nullptr );
+    const Columns cols = selectedColumns( opt );
+    const Counts c = processFile( "", work, opt.bytesPerThread );
+    printCounts( opt, cols, c, nullptr );
     return 0;
   }
 

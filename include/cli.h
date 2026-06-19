@@ -3,6 +3,7 @@
  */
 #pragma once
 
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -77,6 +78,30 @@ struct Options
   Workload workload() const;
 };
 
+// qwc's output columns, in wc's fixed order: lines, words, chars, bytes,
+// longest line. The --char tally (qwc-only) has no wc counterpart, so it is
+// appended last. `: u8` keeps the per-element width at one byte so the
+// Columns array below stays tight.
+enum class Column : u8
+{
+  Lines,
+  Words,
+  Chars,
+  Bytes,
+  MaxLine,
+  Target
+};
+
+// The selected output columns for a single qwc invocation. Capped at the six
+// existing column kinds; `n` is the number of populated entries. Stack-only,
+// computed once per invocation in `printResults` / `main`, reused for every
+// row and the total.
+struct Columns
+{
+  std::array<Column, 6> data;
+  u8 n;
+};
+
 // Print the help / usage text to stdout.
 void printHelp();
 
@@ -90,10 +115,16 @@ std::optional<int> parseArgs( int argc, char** argv, Options& opt );
 // false after reporting an unreadable directory.
 bool collectFiles( Options& opt );
 
+// The set of output columns the given Options select, in wc's fixed order.
+Columns selectedColumns( const Options& opt );
+
 // Print one output row: each selected column right-justified in a min-width-7
-// field (matching wc's " %7ju"), then -- when `name` is non-null -- a space and
-// the name. Used for stdin (no name), each file, and the "total" line.
-void printCounts( const Options& opt, const Counts& c, const char* name );
+// field (matching wc's " %7ju"), then -- when `name` is non-null -- a space
+// and the name. Callers compute `cols` once and pass it down. Used for stdin
+// (no name), each file, and the "total" line.
+void printCounts(
+    const Options& opt, const Columns& cols, const Counts& c, const char* name
+);
 
 // Render the counted files in wc's layout: one row per file (selected columns +
 // name), plus a trailing "total" row when more than one file was counted. With

@@ -432,32 +432,19 @@ bool collectFiles( Options& opt )
   return true;
 }
 
-namespace {
-
-// qwc's output columns, in wc's fixed order: lines, words, chars, bytes,
-// longest line. The --char tally (qwc-only) has no wc counterpart, so it is
-// appended last.
-enum class Column
+Columns selectedColumns( const Options& opt )
 {
-  Lines,
-  Words,
-  Chars,
-  Bytes,
-  MaxLine,
-  Target
-};
-
-std::vector<Column> selectedColumns( const Options& opt )
-{
-  std::vector<Column> cols;
-  if ( opt.lines ) cols.push_back( Column::Lines );
-  if ( opt.words ) cols.push_back( Column::Words );
-  if ( opt.chars ) cols.push_back( Column::Chars );
-  if ( opt.bytes ) cols.push_back( Column::Bytes );
-  if ( opt.maxLine ) cols.push_back( Column::MaxLine );
-  if ( opt.target ) cols.push_back( Column::Target );
-  return cols;
+  Columns out{};
+  if ( opt.lines ) out.data[out.n++] = Column::Lines;
+  if ( opt.words ) out.data[out.n++] = Column::Words;
+  if ( opt.chars ) out.data[out.n++] = Column::Chars;
+  if ( opt.bytes ) out.data[out.n++] = Column::Bytes;
+  if ( opt.maxLine ) out.data[out.n++] = Column::MaxLine;
+  if ( opt.target ) out.data[out.n++] = Column::Target;
+  return out;
 }
+
+namespace {
 
 usize columnValue( const Counts& c, const Column col, const Options& opt )
 {
@@ -482,12 +469,14 @@ usize columnValue( const Counts& c, const Column col, const Options& opt )
 
 }  // namespace
 
-void printCounts( const Options& opt, const Counts& c, const char* name )
+void printCounts(
+    const Options& opt, const Columns& cols, const Counts& c, const char* name
+)
 {
   // Each selected column right-justified in a min-width-7 field that grows for
   // larger counts exactly as wc does, then the optional name.
-  for ( const Column col: selectedColumns( opt ) )
-    std::printf( " %7zu", columnValue( c, col, opt ) );
+  for ( u8 i = 0; i < cols.n; ++i )
+    std::printf( " %7zu", columnValue( c, cols.data[i], opt ) );
   if ( name ) std::printf( " %s", name );
   std::putchar( '\n' );
 }
@@ -495,6 +484,7 @@ void printCounts( const Options& opt, const Counts& c, const char* name )
 void printResults( const Options& opt, const std::vector<Counts>& output )
 {
   const usize numFiles = output.size();
+  const Columns cols = selectedColumns( opt );
 
   // The grand total covers every file, independent of sorting or --top. Each
   // column sums, except the longest line, which is a maximum (matching wc -L).
@@ -518,7 +508,7 @@ void printResults( const Options& opt, const std::vector<Counts>& output )
 
   const bool single = opt.columnCount() == 1;
   if ( single && opt.sortMode != SortMode::None ) {
-    const Column col = selectedColumns( opt ).front();
+    const Column col = cols.data[0];
 
     // File sizes are only needed for --sort-by-size, so fetch them lazily.
     // An unstattable file ranks as size 0, like the old error_code path.
@@ -558,14 +548,15 @@ void printResults( const Options& opt, const std::vector<Counts>& output )
     std::reverse( order.begin(), order.end() );
 
   // wc prints one row per file -- including for a single file (with its name).
-  for ( const usize i: order ) printCounts( opt, output[i], opt.files[i] );
+  for ( const usize i: order )
+    printCounts( opt, cols, output[i], opt.files[i] );
 
   // The "total" row appears only when more than one file was counted, matching
   // wc. (--top may narrow the listing above, but the total still covers every
   // file.) A recursive walk that matched no files has nothing to name, so it
   // just prints a bare zero row rather than nothing at all.
   if ( numFiles > 1 )
-    printCounts( opt, total, "total" );
+    printCounts( opt, cols, total, "total" );
   else if ( numFiles == 0 )
-    printCounts( opt, total, nullptr );
+    printCounts( opt, cols, total, nullptr );
 }
