@@ -1,6 +1,7 @@
 # IDEs and venvs
 .idea
 .venv
+.cache
 
 # Binaries
 qwc*
@@ -9,7 +10,7 @@ qwc*
 benchmarks/__pycache__
 
 # CMake build artifacts
-build/
+build*
 build-release
 build-pgo/
 build-wsl/
