@@ -72,7 +72,7 @@ def validate_locales(locales: list) -> None:
     if missing:
         sys.exit(f"missing locale(s) on this host: {', '.join(missing)}. "
                  f"Install with localedef / locale-gen, or pass --locales "
-                 f"with a subset of: {', '.join(sorted(raw_available))[:200]}...")
+                 f"with a subset of: {', '.join(sorted(raw_available))}")
 
 
 def run_hyperfine(commands, warmup: int, runs: int,

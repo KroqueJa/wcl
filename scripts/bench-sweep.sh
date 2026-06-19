@@ -4,14 +4,16 @@
 #
 # Default: LTO candidate, qwc + latest-release columns only (no uu-wc /
 # GNU wc), both locales (LC_ALL=C and LC_ALL=C.UTF-8) per
-# benchmarks/bench.py's --locales default. ~6 min total on the i7-8700
-# (each cell runs once per locale; qwc adopts LC_CTYPE once at startup
-# so the two locales exercise different kernel paths).
+# benchmarks/bench.py's --locales default. ~3 min total on the i7-8700
+# under --no-prep (164s measured 2026-06-19); slightly longer with
+# bench-prep. Each cell runs once per locale; qwc adopts LC_CTYPE once
+# at startup so the two locales exercise different kernel paths.
 #
 # Flags:
-#   --with-competitors   re-add uu-wc + GNU wc columns. Adds ~6 min
-#                        (GNU wc -m under C.UTF-8 is ~90x slower than
-#                        under C).
+#   --with-competitors   re-add uu-wc + GNU wc columns. Adds several
+#                        minutes -- GNU wc -m under C.UTF-8 is much
+#                        slower than under C, so the C.UTF-8 rows
+#                        dominate wall time.
 #   --no-prep            skip 'sudo bench-prep apply' (default: apply on
 #                        Linux; macOS skips automatically).
 #
