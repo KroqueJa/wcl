@@ -206,7 +206,7 @@ def generate_many(out_dir: str, total: int, seed: int, mbfrac: float,
 def generate_bench_corpora(out_dir: str, seed: int) -> None:
     """Emit the six bench-sweep corpora at 256 MiB each into out_dir.
 
-    Designed for scripts/bench-sweep.sh: every corpus exercises a different
+    Designed for scripts/bench/sweep.sh: every corpus exercises a different
     kernel control-flow shape, but at a size where the full sweep finishes
     in ~2 minutes on the i7-8700 (i.e. ~4x faster than the historical
     512 MiB corpora) while staying well above the 256 KiB L2-resident
@@ -290,7 +290,7 @@ def main() -> None:
                           "character outside the requested length class."))
     ap.add_argument("--bench-corpora", action="store_true",
                     help=("regenerate the six bench-sweep corpora at 256 MiB "
-                          "each into --out-dir. Used by scripts/bench-sweep.sh "
+                          "each into --out-dir. Used by scripts/bench/sweep.sh "
                           "to set up a fresh box; idempotent on repeat runs. "
                           "Requires --out-dir; --size/--out/--many ignored."))
     ap.add_argument("--out-dir", default=None,

@@ -3,12 +3,12 @@
 # THP / KSM / ASLR / NMI watchdog off, noisy services stopped, page cache
 # dropped. Snapshots prior state to /tmp/qwc-bench-state so 'restore' is a
 # proper revert -- even if the bench dies before its EXIT trap fires, you
-# can rerun 'sudo bench-prep.sh restore' to get the box back.
+# can rerun 'sudo scripts/bench/prep.sh restore' to get the box back.
 #
 # Usage:
-#   sudo ./scripts/bench-prep.sh apply
-#   sudo ./scripts/bench-prep.sh restore
-#   ./scripts/bench-prep.sh status
+#   sudo ./scripts/bench/prep.sh apply
+#   sudo ./scripts/bench/prep.sh restore
+#   ./scripts/bench/prep.sh status
 #
 # Out of scope (need a reboot or risk locking the box):
 #   isolcpus= / nohz_full= / mitigations= -- kernel cmdline, do in bootloader.
@@ -19,10 +19,10 @@ set -euo pipefail
 
 # Linux-only: every knob below lives under /sys, /proc, or systemd. The
 # macOS / Apple Silicon equivalents (mdutil, purge, taskpolicy, launchctl)
-# are a different tool entirely; bench-sweep.sh skips the prep call
+# are a different tool entirely; sweep.sh skips the prep call
 # on non-Linux rather than trying to paper over the gap here.
 if [ "$(uname -s)" != "Linux" ]; then
-  echo "bench-prep.sh: Linux-only (got $(uname -s)). Skipping." >&2
+  echo "bench/prep: Linux-only (got $(uname -s)). Skipping." >&2
   exit 0
 fi
 
@@ -62,7 +62,7 @@ apply() {
   : > "$STATE"
   chmod 600 "$STATE"
   remember "#!/usr/bin/env bash"
-  remember "# Auto-generated revert script. Executed by bench-prep.sh restore."
+  remember "# Auto-generated revert script. Executed by bench/prep restore."
   remember "set +e"
 
   # cpufreq governor -> performance, snapshot per-CPU.

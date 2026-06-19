@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# perf-ab: mechanism A/B between the working-tree qwc (./qwc, built from the
+# ab: mechanism A/B between the working-tree qwc (./qwc, built from the
 # branch) and the main baseline (./qwc-main), via `perf stat -r N`. Complements
 # benchmarks/bench.py: bench.py gives wall-clock + speedup ratios; this gives
 # cycles / instructions / branches / branch-misses / LLC-load-misses, which is
@@ -17,16 +17,16 @@
 #   3. `perf` available (linux-tools / perf package).
 #
 # Usage:
-#   scripts/perf-ab.sh [-r RUNS] <flags-string> <corpus-path>
+#   scripts/bench/ab.sh [-r RUNS] <flags-string> <corpus-path>
 # Examples:
-#   scripts/perf-ab.sh "-l -w" benchmarks/test-data/mixed-256MiB
-#   scripts/perf-ab.sh -r 20 -- "-l -w -m" benchmarks/test-data/cjk-short.txt
-#   LC_ALL=C.UTF-8 scripts/perf-ab.sh "-l -w" benchmarks/test-data/cjk-short.txt
+#   scripts/bench/ab.sh "-l -w" benchmarks/test-data/mixed-256MiB
+#   scripts/bench/ab.sh -r 20 -- "-l -w -m" benchmarks/test-data/cjk-short.txt
+#   LC_ALL=C.UTF-8 scripts/bench/ab.sh "-l -w" benchmarks/test-data/cjk-short.txt
 #
 # Output goes to stdout: two perf stat blocks, branch then main, with the qwc
 # --version banner above each so it's unambiguous which build produced which
 # numbers. Both perf and the banners are merged onto stdout so a single
-# redirect (`scripts/perf-ab.sh ... > out.log`) captures everything.
+# redirect (`scripts/bench/ab.sh ... > out.log`) captures everything.
 set -euo pipefail
 exec 2>&1
 
@@ -41,11 +41,11 @@ fi
 flags="$1"
 corpus="$2"
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 "$(dirname "$0")/sync-current-build.sh" >/dev/null
 
 if [[ ! -x ./qwc-main ]]; then
-  echo "perf-ab: ./qwc-main missing -- build it (see script header) and retry." >&2
+  echo "ab: ./qwc-main missing -- build it (see script header) and retry." >&2
   exit 1
 fi
 

@@ -14,8 +14,8 @@
 #                        minutes -- GNU wc -m under C.UTF-8 is much
 #                        slower than under C, so the C.UTF-8 rows
 #                        dominate wall time.
-#   --no-prep            skip 'sudo bench-prep apply' (default: apply on
-#                        Linux; macOS skips automatically).
+#   --no-prep            skip 'sudo scripts/bench/prep.sh apply' (default:
+#                        apply on Linux; macOS skips automatically).
 #
 # Override per-cell budget with WARMUP / RUNS env vars (defaults: 3 / 20).
 # Single-locale: pass --locales c (or c.utf-8) through bench.py via
@@ -38,7 +38,7 @@ for arg in "$@"; do
     -h|--help)
       sed -n '2,/^set -euo pipefail/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
-    *) echo "bench-sweep: unknown flag '$arg'" >&2; exit 2 ;;
+    *) echo "sweep: unknown flag '$arg'" >&2; exit 2 ;;
   esac
 done
 
@@ -58,21 +58,21 @@ step_time() {
 if [ "$(uname -s)" = "Linux" ] && [ "$do_prep" = "1" ]; then
   echo "=== Quieting the system (pass --no-prep to skip) ==="
   sudo -v
-  sudo ./scripts/bench-prep.sh apply
-  trap 'sudo ./scripts/bench-prep.sh restore' EXIT INT TERM
+  sudo ./scripts/bench/prep.sh apply
+  trap 'sudo ./scripts/bench/prep.sh restore' EXIT INT TERM
 fi
 
 # --- build candidate --------------------------------------------------------
 echo "=== Building candidate ==="
 step_start=$SECONDS
-./scripts/sync-current-build.sh
+./scripts/bench/sync-current-build.sh
 step_time "$step_start"
 cp qwc "$candidate_bin"
 
 # --- baseline ---------------------------------------------------------------
 echo "=== Building / refreshing the latest-release baseline ==="
 step_start=$SECONDS
-./scripts/sync-latest-release.sh
+./scripts/bench/sync-latest-release.sh
 step_time "$step_start"
 baseline_ver="$("$repo_root/qwc-latest-release" --version 2>/dev/null | awk '{print $2}')"
 echo "candidate : $("$candidate_bin" --version 2>/dev/null)"

@@ -612,7 +612,7 @@ though the fusion itself doesn't ship:
    planned-fusion cells — establishing baselines for the two remaining
    `Next` fusion entries (`-l -L`, `-l -w -m`) so they don't have to
    redo this campaign's matrix work.
-4. `scripts/perf-ab.sh` — A/B `perf stat -r N` wrapper for the
+4. `scripts/bench/ab.sh` — A/B `perf stat -r N` wrapper for the
    working-tree `qwc` against `./qwc-main`, complementing `bench.py`
    (which gives wall-clock) with cycles / instructions / branches /
    LLC-load-misses (which gives mechanism). Reusable for any kernel
@@ -628,7 +628,7 @@ just didn't pay off.
 Measured **2026-06-18** on the i7-8700 (AVX2, 12 logical CPUs, GCC 15.3.1).
 `v0.2.0` source built plain `-DCMAKE_BUILD_TYPE=Release` (no LTO, no PGO) as
 `./qwc-latest-release` — the "before" baseline. Candidate `./qwc` built from
-HEAD via the new `scripts/bench-sweep.sh`, configured three ways:
+HEAD via the new `scripts/bench/sweep.sh`, configured three ways:
 (a) LTO-only (`-flto=auto`), (b) PGO + LTO with the legacy ~32 MiB synthetic
 training corpus and stage-1 LTO off, (c) PGO + LTO with stage-1 LTO on and
 training on the actual bench corpora (~1.5 GB across the six shapes).
@@ -747,7 +747,7 @@ to `-w` is visible there too. We are not re-running NEON on a quiet
 system: the AVX2 + GCC PGO result is bad enough to drop the tooling on
 both ISAs rather than maintain two separate PGO stories. If someone
 re-opens this on macOS/NEON later, the `gen-data.py --bench-corpora`
-generator and `scripts/bench-sweep.sh` flow still apply.
+generator and `scripts/bench/sweep.sh` flow still apply.
 
 ### Conformance
 
@@ -760,7 +760,7 @@ codegen semantics).
 
 Measured **2026-06-19** on the native Linux box (Intel i7-8700, 6C/12T,
 3.2 GHz; AVX2; kernel 7.0.12-arch1-1; root `/dev/sdb2` ext4) with warm
-page cache via `scripts/bench-sweep.sh`, plus a corroborating run on the
+page cache via `scripts/bench/sweep.sh`, plus a corroborating run on the
 Apple Silicon NEON box. Six 256 MiB corpora (`big.txt`, `long`, `many`,
 `mixed`, `short`, `single-line`) × the 10-cell `DEFAULT_FLAGS` grid =
 60 cells per host. Candidate is `scanBuffer` strip-mined into 32 KiB

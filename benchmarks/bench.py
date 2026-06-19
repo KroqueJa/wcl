@@ -153,7 +153,7 @@ def main() -> None:
     ap.add_argument("--gwc", default="wc", help="GNU wc invocation")
     ap.add_argument("--no-competitors", action="store_true",
                     help="skip uu-wc and GNU wc columns (and their autodetect). "
-                         "Used by scripts/bench-sweep.sh for the fast inner-loop "
+                         "Used by scripts/bench/sweep.sh for the fast inner-loop "
                          "sweep; the per-corpus wrappers keep them by default.")
     ap.add_argument("--locales", default="C,C.UTF-8",
                     help="comma-separated LC_ALL values to measure each cell "
