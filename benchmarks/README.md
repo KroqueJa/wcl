@@ -1007,6 +1007,224 @@ and `superpowers/plans/2026-06-19-io-uring-overlap.md`. The
 companion roadmap entry moves to `## Not doing`. Linux-only campaign
 (macOS was carved out from the start), no NEON port implication.
 
+## Finding 12 — Per-instruction attribution of the AVX2 words path on CJK
+
+Rung 1 of the "observe before guessing" upgrade lands a `RelWithDebInfo`
+build of qwc (`./qwc-perf`) plus a thin `scripts/bench/perf-annotate.sh`
+wrapper, then uses them to attribute cycles per instruction on the AVX2
+`words` kernel under 3-byte-UTF-8 input. This is observation, not a
+hypothesis test: the output feeds the open "Expand AVX2 words classifier
+to 3-byte sequences" go/no-go on a future branch — no threshold is
+pre-committed here.
+
+### Methodology
+
+Build (binary-size flags inherited from the existing `Release|RelWithDebInfo`
+gate, plus `-g`; the annotated binary is the shipping Release shape with
+debug info):
+
+```sh
+cmake -B build-perf -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DQWC_SUFFIX=perf
+cmake --build build-perf --target qwc
+```
+
+Corpus (256 MiB, 100% 3-byte UTF-8 short lines — Han + Hangul, ASCII
+spaces, no ASCII filler words):
+
+```sh
+uv run python3 benchmarks/gen-data.py --bench-corpora \
+    --out-dir benchmarks/test-data
+# yields benchmarks/test-data/cjk-short.txt (--line-length short,
+# --utf8-class 3byte, --multibyte-fraction 1.0)
+```
+
+Three runs, all under `LC_ALL=C.UTF-8` (the locale where the
+`scalarUtf8` punt is live):
+
+```sh
+sudo sysctl kernel.perf_event_paranoid=1   # one-time, per boot
+scripts/bench/perf-annotate.sh -w     benchmarks/test-data/cjk-short.txt
+scripts/bench/perf-annotate.sh -w     benchmarks/test-data/mixed
+scripts/bench/perf-annotate.sh '-l -w' benchmarks/test-data/cjk-short.txt
+```
+
+`scripts/bench/prep.sh apply` was NOT applied for these runs (SMT,
+turbo, and the cpufreq governor were at OS defaults). Reproducibility
+of the headline percentages is quantified below; longer-term variance
+across sessions / cold caches is out of scope for Rung 1.
+
+### Results
+
+`words(char const*, ...)` (the AVX2 words kernel, with LTO having
+folded in the `scalarUtf8` punt and its `qwcIswprint` callee) dominates
+in every run. Top-level shares:
+
+| Run                    | `words` symbol | `rep_movs_alternative` |
+|------------------------|---------------:|-----------------------:|
+| CJK, `-w`              |     **96.60%** |                  1.84% |
+| CJK, `-l -w`           |     **96.53%** |                  1.63% |
+| Mixed, `-w` (baseline) |     **80.60%** |                  4.35% |
+
+The headline metric is cycles per byte, which absorbs the percentage
+normalization and frames the gap a 3-byte extension would be closing:
+
+| Run            | Total cycles | Cycles / byte |
+|----------------|-------------:|--------------:|
+| CJK, `-w`      |        3.56B |     **13.30** |
+| CJK, `-l -w`   |        3.54B |         13.22 |
+| Mixed, `-w`    |        1.32B |      **4.95** |
+
+**CJK is 2.7× slower per byte than mixed.** That is the budget a 3-byte
+AVX2 extension would be trying to claw back.
+
+### Where the cycles go inside `words`
+
+Source mapping comes from `perf annotate --source` against the
+RelWithDebInfo binary; offset → source line is direct.
+
+| Offset | Instruction                       | Source                                       | CJK `-w` | Mixed `-w` |
+|--------|-----------------------------------|----------------------------------------------|---------:|-----------:|
+| 0x6604 | `vmovdqu (%rdx),%ymm0`            | `words_avx2.cpp:106` (AVX2 prologue load)    |    1.30% |      4.33% |
+| 0x6608 | `vpcmpgtb %ymm0,%ymm5,%ymm2`      | AVX2 classifier (asciiSep / asciiPrint)      |    1.05% |      3.53% |
+| 0x6848 | `movzbl (%rdx),%ecx`              | `b0 = p[0]` in `scalarUtf8` while-loop       |    2.89% |      3.17% |
+| 0x6854 | `lea -0x9(%rcx),%edx`             | `cp >= 0x09 && cp <= 0x0D` (ASCII sep)       |    5.88% |     (<2%)  |
+| 0x6876 | `movzwl (%r14,%rdx,2),%edx`       | `qwcIswprint`: `kIswprintIndex[cp >> 8]`     |    6.88% |     (<2%)  |
+| 0x6886 | `movzbl (%rdx,%r10,1),%edx`       | `qwcIswprint`: `block[(cp & 0xFF) >> 3]`     |**11.19%**| **10.73%** |
+| 0x6b80 | `cmp $0x205f,%ecx`                | `isSepCp(U+205F)`                            |    3.72% |     (<2%)  |
+
+Two structural observations:
+
+1. **The AVX2 prologue runs on every block in both corpora.** Absolute
+   `vmovdqu` cycles are 1.30% × 3.56B ≈ 46M (CJK) vs 4.33% × 1.32B ≈
+   57M (mixed); the difference is not "AVX2 only fires on mixed", it's
+   that mixed's total cycles are smaller so a constant-per-block load
+   is a larger fraction. The percentage gap is normalization, not
+   activity. The mechanism that actually differs is what fraction of
+   blocks survive the `clean == high == (lead2 | cont)` test at
+   `words_avx2.cpp:117–118`: a block with any 3-byte (E0–EF) or 4-byte
+   (F0–F7) lead fails the test and forces `scalarUtf8` on every byte
+   of the block.
+
+2. **The scalar punt is dominated by `qwcIswprint`, not by sequence
+   decode.** Combined `qwcIswprint` index + bitmap load (0x6876 +
+   0x6886) is **18.07% on CJK** and **~13.6% on mixed**. The
+   `isSepCp(U+205F)` check at 0x6b80 is visible on CJK (3.72%) and
+   cold on mixed — consistent with U+205F being a 3-byte code point
+   that only the CJK corpus reaches.
+
+`-l -w` vs `-w` on CJK is structurally identical (0x6886 = 11.32%,
+`isSepCp` = 4.00%); bundling `-l` adds a 25%-share `vpcmpeqb` in a
+separate countlines symbol but does not shift which lines own the work
+on the words side.
+
+### Reproducibility
+
+Two consecutive `-w` records on the CJK corpus, no bench-prep, no
+intervening workload:
+
+| Quantity                                | Run 1   | Run 1b  | Δ       |
+|-----------------------------------------|--------:|--------:|--------:|
+| `words` % of cycles                     |  96.60% |  97.24% |  +0.64pp|
+| `0x6886` (`qwcIswprint` bitmap load)    |  11.19% |  12.07% |  +0.88pp|
+
+Within the ±2pp budget set in the design spec. Useable as Finding 12's
+headline numbers.
+
+### Reading: what the open 3-byte-classifier question gets out of this
+
+The TODO entry "Expand the AVX2 words vectorized classifier to 3-byte
+sequences" is asking whether to fold E0–EF lead-byte classification
+into the AVX2 fast path instead of punting to `scalarUtf8`. This
+Finding gives that branch its measured baseline:
+
+- **Upper-bound speedup on CJK is ~2.7×** (13.3 → ~4.95 cy/B if the
+  extension fully closed the gap to mixed). Realistic Asian-language
+  text — Japanese prose has substantial ASCII (spaces, numbers,
+  punctuation, embedded English) and the multibyte words are
+  predominantly 3-byte — would land somewhere between mixed (5 cy/B)
+  and pure CJK (13 cy/B), so the realized speedup on realistic
+  workloads is bounded by where the workload sits on that axis.
+- **Most of the scalar cost is `qwcIswprint`, not sequence decode.**
+  ~18% of CJK's cycles go to the two-level Unicode bitmap. A 3-byte
+  AVX2 classifier that still has to call `qwcIswprint` (because most
+  3-byte code points are printable and the bitmap is the source of
+  truth) does not eliminate that 18%; it eliminates the
+  per-byte-loop overhead around it. The win is real but smaller than
+  "all scalar cycles disappear".
+- **`isSepCp` is the wrinkle the TODO entry already calls out.** The
+  3-byte separator code points (U+1680, U+2000–200A, U+205F, U+3000,
+  plus the no-break-space-mode set U+2007 / U+202F / U+2060) sit
+  under lead bytes E1 / E2 / E3, so a vectorized 3-byte path needs
+  either a continuation-byte compare in the vector domain or a
+  per-block scalar fallback on those leads. The U+205F compare at
+  `0x6b80` (3.72% on CJK) is the visible cost of that case today.
+
+The threshold that turns these numbers into a go/no-go belongs to the
+3-byte-ext branch. This Finding ships the data.
+
+### Per-instruction observation workflow
+
+Workflow doc (permanent infrastructure — read this before the next
+`perf annotate` campaign):
+
+**Build.** `cmake -B build-perf -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+-DQWC_SUFFIX=perf` produces `./qwc-perf` next to `./qwc`. The existing
+`Release|RelWithDebInfo` gate in `CMakeLists.txt` covers RelWithDebInfo,
+so the annotated binary inherits all binary-size flags
+(`-fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables
+-fno-unwind-tables`) — it is structurally the shipping Release binary,
+plus `-g`. Don't profile Debug builds: their hotspots look different
+(unhardened inlining, no LTO, kept exception edges).
+
+**Wrapper.** `scripts/bench/perf-annotate.sh <flag> <corpus> [<symbol>]`
+runs `perf record -e cycles:pp` then a flat top-symbols report; if a
+symbol is given, it also runs `perf annotate <symbol>`. Env knobs:
+`QWC_PERF_LOCALE` (default `C.UTF-8`), `QWC_BIN` (default `./qwc-perf`).
+Perf data lands at `/tmp/qwc-perf.data` and is reused if you re-annotate
+a different symbol — `perf annotate -i /tmp/qwc-perf.data --stdio
+--no-source` is the no-record one-liner. Use `--source` to interleave
+source lines with the disassembly (the offset → source mapping this
+Finding's results table relies on).
+
+**`perf_event_paranoid` gotcha.** Arch defaults to 4; the wrapper
+demands `≤ 1` and prints a one-line fix. `sudo sysctl
+kernel.perf_event_paranoid=1` is per-boot; pin it in
+`/etc/sysctl.d/` if you want it permanent.
+
+**Callgraph caveat.** The binary-size flags strip unwind tables, so
+`--call-graph dwarf` is unusable. `--call-graph lbr` works without
+unwind tables and is the escape hatch when caller attribution is
+needed. The Rung 1 wrapper omits `--call-graph` entirely; annotate
+doesn't need it.
+
+**Symbol naming after LTO.** LTO folds `scalarUtf8` and `qwcIswprint`
+into their callers. `perf annotate scalarUtf8` will fail with "no
+samples"; the symbol that actually owns the cycles is the outer kernel
+function (here, `words(char const*, ...)`). The
+`scripts/bench/perf-annotate.sh` wrapper documents this in its help.
+The escape hatch is `perf annotate -i /tmp/qwc-perf.data --stdio
+--no-source` with no symbol filter — that prints every symbol with
+samples.
+
+**Bench-prep.** `scripts/bench/prep.sh apply` is recommended for any
+measurement whose result is going to be quoted as authoritative —
+SMT off, turbo off, performance governor, page-cache drop. Rung 1's
+own measurements skipped it (the workflow doc is the deliverable, not
+a finely-quantified number); future campaigns using this workflow
+should apply prep first.
+
+**CJK corpus.** `benchmarks/test-data/cjk-short.txt` is the 3-byte
+UTF-8 stress corpus (Han + Hangul, 256 MiB, `--line-length short`,
+`--utf8-class 3byte`, `--multibyte-fraction 1.0`). Regen recipe:
+`uv run python3 benchmarks/gen-data.py --bench-corpora --out-dir
+benchmarks/test-data` — idempotent on existing corpora.
+
+**What Rung 1 doesn't answer.** "Frontend-Bound / Backend-Bound /
+Bad-Speculation / Retiring?" is a top-down microarchitecture question
+that `perf annotate` can't answer. Rung 2 (`toplev.py` TMA setup,
+separate branch) is the next escalation when the per-instruction view
+runs out of explanatory power.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

@@ -89,6 +89,7 @@ corpora=(
   "mixed|benchmarks/test-data/mixed|Mixed shape (256 MiB)"
   "short|benchmarks/test-data/short|Short lines (256 MiB)"
   "single-line|benchmarks/test-data/single-line|Single line (256 MiB)"
+  "cjk-short|benchmarks/test-data/cjk-short.txt|CJK 3-byte UTF-8 short lines (256 MiB)"
 )
 
 bench_args=()

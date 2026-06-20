@@ -104,10 +104,9 @@ def build_word_pool(rng: random.Random, n: int, multibyte_fraction: float,
 
 def write_text(f, target: int, pool: list, rng: random.Random,
                shape: str = "mixed") -> int:
-    """Write newline-terminated word-lines to `f` until ~`target` bytes. Returns
-    the number of characters produced (a close proxy for bytes; multibyte words
-    make the file marginally larger). Termination counts the pending buffer too,
-    so it works for KiB-sized targets, not just multi-MiB ones.
+    """Write newline-terminated word-lines to `f` until ~`target` bytes.
+    Returns the number of bytes produced. Termination counts the pending
+    buffer too, so it works for KiB-sized targets, not just multi-MiB ones.
 
     `shape` selects the line-length distribution:
       mixed       -- the historical default: 3-18 words/line, with 1% spikes
@@ -115,10 +114,14 @@ def write_text(f, target: int, pool: list, rng: random.Random,
       short       -- 40-80 byte lines, no spikes. Hit-fallback stress.
       long        -- 2-8 KiB lines, no spikes. Clean-path stress.
       single-line -- one line of `target` bytes ending in a newline. Pathological
-                     best-case ceiling."""
+                     best-case ceiling.
+
+    Internally tracks UTF-8 byte counts (not char counts) so non-mixed
+    utf8_class pools -- e.g. 100% 3-byte CJK -- land at the intended file
+    size instead of ~3x it."""
     buf = []
-    pending = 0   # chars buffered since the last flush
-    produced = 0  # total chars produced so far
+    pending = 0   # bytes buffered since the last flush
+    produced = 0  # total bytes produced so far
     FLUSH = 1 << 20
 
     if shape == "single-line":
@@ -128,41 +131,42 @@ def write_text(f, target: int, pool: list, rng: random.Random,
         chunk_words = 256
         while body_remaining > 0:
             line = " ".join(rng.choices(pool, k=chunk_words))
-            # Strip a trailing space if the byte budget is tight; close enough.
-            data = line[:body_remaining] if len(line) > body_remaining else line + " "
+            data = (line + " ").encode("utf-8")
+            if len(data) > body_remaining:
+                data = data[:body_remaining]
             buf.append(data)
             pending += len(data)
             produced += len(data)
             body_remaining -= len(data)
             if pending >= FLUSH:
-                f.write("".join(buf).encode("utf-8"))
+                f.write(b"".join(buf))
                 buf = []
                 pending = 0
-        buf.append("\n")
+        buf.append(b"\n")
         produced += 1
-        f.write("".join(buf).encode("utf-8"))
+        f.write(b"".join(buf))
         return produced
 
     while produced < target:
         if shape == "short":
-            n_words = rng.randint(4, 10)        # ~40-80 bytes
+            n_words = rng.randint(4, 10)        # ~40-80 bytes (ASCII)
         elif shape == "long":
-            n_words = rng.randint(300, 1200)    # ~2-8 KiB
+            n_words = rng.randint(300, 1200)    # ~2-8 KiB (ASCII)
         else:  # mixed -- historical default
             # ~1% of lines are long (so -L is non-trivial); the rest are normal.
             n_words = (rng.randint(80, 200)
                        if rng.random() < 0.01
                        else rng.randint(3, 18))
-        line = " ".join(rng.choices(pool, k=n_words)) + "\n"
+        line = (" ".join(rng.choices(pool, k=n_words)) + "\n").encode("utf-8")
         buf.append(line)
         pending += len(line)
         produced += len(line)
         if pending >= FLUSH:
-            f.write("".join(buf).encode("utf-8"))
+            f.write(b"".join(buf))
             buf = []
             pending = 0
     if buf:
-        f.write("".join(buf).encode("utf-8"))
+        f.write(b"".join(buf))
     return produced
 
 
@@ -224,13 +228,17 @@ def generate_bench_corpora(out_dir: str, seed: int) -> None:
     # it that. The other five drop the `-512MiB` suffix that's now misleading.
     # `many/` is a directory of small files (generate_many handles it).
     singles = [
-        ("big.txt",     "mixed",       0.08),
-        ("long",        "long",        0.08),
-        ("mixed",       "mixed",       0.08),
-        ("short",       "short",       0.08),
-        ("single-line", "single-line", 0.08),
+        # (filename, shape, mbfrac, utf8_class)
+        ("big.txt",     "mixed",       0.08, "mixed"),
+        ("long",        "long",        0.08, "mixed"),
+        ("mixed",       "mixed",       0.08, "mixed"),
+        ("short",       "short",       0.08, "mixed"),
+        ("single-line", "single-line", 0.08, "mixed"),
+        # 3-byte-UTF-8 stress: 100% CJK words at short-line shape. Used by
+        # Rung 1 of the perf-observe workflow (scripts/bench/perf-annotate.sh).
+        ("cjk-short.txt", "short",     1.0,  "3byte"),
     ]
-    for filename, shape, mbfrac in singles:
+    for filename, shape, mbfrac, utf8_class in singles:
         path = os.path.join(out_dir, filename)
         if os.path.isfile(path):
             actual_size = os.path.getsize(path)
@@ -239,7 +247,7 @@ def generate_bench_corpora(out_dir: str, seed: int) -> None:
             if abs(actual_size - SIZE) <= SIZE // 20:
                 print(f"skip {filename}: already {actual_size} bytes", file=sys.stderr)
                 continue
-        generate_single(path, SIZE, seed, mbfrac, shape, "mixed")
+        generate_single(path, SIZE, seed, mbfrac, shape, utf8_class)
 
     # `many/`: total ~256 MiB across log-uniform [4 KiB, 1 MiB] file sizes,
     # same shape spec generate_many already takes. Idempotency keys off the
