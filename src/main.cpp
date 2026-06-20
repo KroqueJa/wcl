@@ -15,6 +15,175 @@
 #include "cli.h"
 #include "processfile.h"
 
+// The C++ runtime overrides below are Linux-only AND Release-only.
+//
+// Linux-only: they assume the qwc build statically links libstdc++ + libgcc
+// and depend on the static-archive link semantics (an object file is
+// contributed only when it satisfies an unresolved reference). Apple
+// targets get libc++ + libunwind from the dyld shared cache instead, so
+// the same symbols are resolved at runtime against system libraries and
+// overriding them in our binary would either be inert or actively wrong.
+//
+// Release-only: Debug builds keep the full libstdc++/libgcc machinery so
+// debuggers, sanitizers, the verbose terminate message ("terminate called
+// after throwing an instance of 'X' / what(): Y") and crash-time stack
+// unwinding work normally during development. The size cost is irrelevant
+// when iterating; the ~110 KB cut is only paid in Release.
+//
+// The matching `-fno-exceptions` / `-fno-rtti` /
+// `-fno-asynchronous-unwind-tables` / `-fno-unwind-tables` flags in
+// CMakeLists.txt are gated on the same conditions
+// (`NOT APPLE AND Release|RelWithDebInfo`).
+#if !defined( __APPLE__ ) && defined( NDEBUG )
+
+// Each override stub exits with a distinct code so that if any of these
+// invisible paths ever fires in production the exit status names the leaf
+// (no stderr message; the visible OOM / I/O failures in processfile.cpp /
+// cli.cpp deliberately still exit 1 to keep wc parity). Codes start at 64
+// to stay clear of common shell-meaningful codes (0 success, 1 generic
+// error, 2 misuse, 126 noexec, 127 not-found, 128+signal).
+enum class ExitPoint : i32
+{
+  VerboseTerminate = 64,
+  PersonalityV0 = 65,
+  UnwindResume = 66,
+  UnwindRaiseException = 67,
+  UnwindResumeOrRethrow = 68,
+  UnwindForcedUnwind = 69,
+  UnwindBacktrace = 70,
+  UnwindDeleteException = 71,
+  UnwindFindEnclosingFunction = 72,
+  UnwindGetCFA = 73,
+  UnwindGetDataRelBase = 74,
+  UnwindGetGR = 75,
+  UnwindGetIP = 76,
+  UnwindGetIPInfo = 77,
+  UnwindGetLanguageSpecificData = 78,
+  UnwindGetRegionStart = 79,
+  UnwindGetTextRelBase = 80,
+  UnwindSetGR = 81,
+  UnwindSetIP = 82,
+  FrameStateFor = 83,
+};
+[[noreturn]] static void exitFrom( ExitPoint p )
+{
+  std::_Exit( static_cast<i32>( p ) );
+}
+
+// Override libstdc++'s default std::terminate handler. The stock one
+// (__verbose_terminate_handler in libsupc++/vterminate.cc) formats "terminate
+// called after throwing an instance of 'X' / what(): Y" by demangling the
+// typeid name -- dragging d_print_comp_inner and the rest of the C++ demangler
+// (~24 KB of text) into the static image even though qwc is built with
+// -fno-exceptions and never throws. The libstdc++.a archive only pulls
+// vterminate.o if this symbol is unresolved when the archive is scanned;
+// defining it here (main.cpp.o is on the link line before -lstdc++) means
+// the linker resolves the reference against qwc and leaves the demangler
+// unreachable, so --gc-sections can free it. A no-throw qwc still needs
+// SOMETHING here in case of std::bad_alloc on a vector grow -- exitFrom
+// matches the contract qwc already gives on fatal errors.
+namespace __gnu_cxx {
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
+void __verbose_terminate_handler()
+{
+  exitFrom( ExitPoint::VerboseTerminate );
+}
+}  // namespace __gnu_cxx
+
+// Override the C++ exception personality routine: libstdc++.a's
+// eh_personality.o is no longer pulled into the link.
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
+extern "C" i32 __gxx_personality_v0( i32, i32, u64, void*, void* )
+{
+  exitFrom( ExitPoint::PersonalityV0 );
+}
+
+// Override every public symbol that libgcc's unwind-dw2.o defines. libstdc++
+// TUs reference these (thread.o, eh_throw.o, stdexcept.o, ...; traced with
+// `ld -y`) from cleanup landing pads even though qwc never throws; if any
+// one of them stays unresolved, the linker pulls unwind-dw2.o and the whole
+// machinery (uw_frame_state_for, execute_cfa_program_*, FDE-lookup btree,
+// the public-API wrappers) comes with it. Resolving them all here against
+// stubs means unwind-dw2.o stays unpulled. Each stub aborts because qwc
+// never throws and -fno-exceptions turned the implicit bad_alloc edges into
+// std::terminate(); any reach into these is a last-resort path.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
+extern "C" void _Unwind_Resume( void* )
+{
+  exitFrom( ExitPoint::UnwindResume );
+}
+extern "C" i32 _Unwind_RaiseException( void* )
+{
+  exitFrom( ExitPoint::UnwindRaiseException );
+}
+extern "C" i32 _Unwind_Resume_or_Rethrow( void* )
+{
+  exitFrom( ExitPoint::UnwindResumeOrRethrow );
+}
+extern "C" i32 _Unwind_ForcedUnwind( void*, void*, void* )
+{
+  exitFrom( ExitPoint::UnwindForcedUnwind );
+}
+extern "C" i32 _Unwind_Backtrace( void*, void* )
+{
+  exitFrom( ExitPoint::UnwindBacktrace );
+}
+extern "C" void _Unwind_DeleteException( void* )
+{
+  exitFrom( ExitPoint::UnwindDeleteException );
+}
+extern "C" void* _Unwind_FindEnclosingFunction( void* )
+{
+  exitFrom( ExitPoint::UnwindFindEnclosingFunction );
+}
+extern "C" u64 _Unwind_GetCFA( void* )
+{
+  exitFrom( ExitPoint::UnwindGetCFA );
+}
+extern "C" u64 _Unwind_GetDataRelBase( void* )
+{
+  exitFrom( ExitPoint::UnwindGetDataRelBase );
+}
+extern "C" u64 _Unwind_GetGR( void*, i32 )
+{
+  exitFrom( ExitPoint::UnwindGetGR );
+}
+extern "C" u64 _Unwind_GetIP( void* )
+{
+  exitFrom( ExitPoint::UnwindGetIP );
+}
+extern "C" u64 _Unwind_GetIPInfo( void*, i32* )
+{
+  exitFrom( ExitPoint::UnwindGetIPInfo );
+}
+extern "C" u64 _Unwind_GetLanguageSpecificData( void* )
+{
+  exitFrom( ExitPoint::UnwindGetLanguageSpecificData );
+}
+extern "C" u64 _Unwind_GetRegionStart( void* )
+{
+  exitFrom( ExitPoint::UnwindGetRegionStart );
+}
+extern "C" u64 _Unwind_GetTextRelBase( void* )
+{
+  exitFrom( ExitPoint::UnwindGetTextRelBase );
+}
+extern "C" void _Unwind_SetGR( void*, i32, u64 )
+{
+  exitFrom( ExitPoint::UnwindSetGR );
+}
+extern "C" void _Unwind_SetIP( void*, u64 )
+{
+  exitFrom( ExitPoint::UnwindSetIP );
+}
+extern "C" void __frame_state_for( void*, void* )
+{
+  exitFrom( ExitPoint::FrameStateFor );
+}
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
+
+#endif  // !__APPLE__ && NDEBUG
+
 // hardware_concurrency() runs a sysconf reading /sys/devices/system/cpu/online
 // on Linux. Hide it behind a helper so the cost is only paid when a caller
 // actually needs the answer, not unconditionally at program startup as a
@@ -95,7 +264,7 @@ static std::vector<Counts> mapFiles(
   return output;
 }
 
-int main( int argc, char** argv )
+i32 main( i32 argc, char** argv )
 {
   Options opt;
 
@@ -111,7 +280,7 @@ int main( int argc, char** argv )
   } else if ( argc == 2 && argv[1][0] != '-' ) {
     opt.lines = opt.words = opt.bytes = true;
     opt.files.push_back( argv[1] );
-  } else if ( const std::optional<int> rc = parseArgs( argc, argv, opt ) ) {
+  } else if ( const std::optional<i32> rc = parseArgs( argc, argv, opt ) ) {
     return *rc;
   }
 

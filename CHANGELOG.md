@@ -17,6 +17,43 @@ not generated from commit messages.
   consistently optimizing the wrong kernel. See `benchmarks/README.md`
   Finding 9.
 
+### Changed
+
+- The Linux Release binary is back down to ~93 KB (`text` ~65 KB), from
+  ~350 KB at v0.2.0 and below the v0.1.0 dynamic-link starting point
+  (~96 KB) — within ~30% of GNU `wc`'s 70 KB on the same host. The C++
+  runtime is still statically linked, but ~110 KB of libstdc++ / libgcc
+  machinery (the C++ name demangler that formats "terminate called after
+  throwing X" messages, the exception personality routine, and the dwarf2
+  stack unwinder) is no longer pulled into the link. The mechanism is
+  link-time symbol overrides: a static archive contributes an object only
+  when it satisfies an unresolved reference, so defining the relevant leaf
+  symbols in qwc as stubs (each calls `_Exit` with a distinct `ExitPoint`
+  enum value so the exit status names the leaf if any ever fires) leaves
+  the upstream archive members untouched and `--gc-sections` frees
+  everything they transitively kept alive. The three overridden trees are
+  `libsupc++/vterminate.o`
+  (`__gnu_cxx::__verbose_terminate_handler` → demangler), libstdc++'s
+  `eh_personality.o` (`__gxx_personality_v0`), and the 18 public symbols
+  exported by `libgcc_eh.a`'s `unwind-dw2.o`. To make sure no qwc code path
+  can ever land in those stubs, the qwc target compiles (Release only)
+  with `-fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables
+  -fno-unwind-tables`; the implicit `std::bad_alloc` edges that would have
+  thrown become `std::terminate()`, which matches the existing
+  fatal-error contract. Debug builds keep the full machinery so debuggers,
+  sanitizers and the verbose terminate message work normally — the cut is
+  Release-only (gated `#if !defined(__APPLE__) && defined(NDEBUG)` in
+  main.cpp; `if( NOT APPLE AND CMAKE_BUILD_TYPE MATCHES
+  "Release|RelWithDebInfo" )` in CMakeLists.txt). Apple targets are
+  unaffected either way — they get libc++ / libunwind from the dyld
+  shared cache, so the same symbols are resolved at runtime against
+  system libraries. A separate, smaller cut on the same branch swapped
+  `std::sort` (the only introsort instantiation in the binary, on the cold
+  `--sort-by-*` path) for `std::qsort` with a free-function comparator,
+  dropping another ~12 KB of `__introsort_loop` + `__adjust_heap` +
+  `__insertion_sort` text. Counts and output are unchanged; the conformance
+  suite agrees on every required cell.
+
 ## [0.2.0] - 2026-06-16
 
 ### Performance

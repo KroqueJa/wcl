@@ -231,6 +231,31 @@ endif()
 add_executable( qwc ${QWC_COMMON_SOURCES} ${QWC_COUNTLINES} ${QWC_WORDS} ${QWC_MAXLINE} ${QWC_CHARS} )
 set_target_properties( qwc PROPERTIES OUTPUT_NAME ${QWC_OUTPUT_NAME} )
 target_compile_options( qwc PRIVATE ${QWC_SIMD_FLAGS} )
+# Binary-size flags only apply to the Linux + glibc + static-libstdc++ link
+# path, and only in Release. The big wins come from src/main.cpp's overrides
+# of the libstdc++ / libgcc terminate-handler / personality-routine /
+# unwind-API symbols (~110 KB of text), which work only because static
+# archives contribute objects only when they satisfy unresolved references --
+# a model that does not apply to Apple's dyld-shared-cache libc++/libunwind.
+# The Release gate matches the C++-side `#if !defined(__APPLE__) &&
+# defined(NDEBUG)` in main.cpp: Debug keeps full exceptions / unwinding /
+# verbose terminate so debuggers and sanitizers work normally.
+if( NOT APPLE
+    AND CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo" )
+  # Drop exceptions and RTTI for the qwc binary only -- qwc never throws and
+  # uses no dynamic_cast / typeid; the implicit std::bad_alloc edges become
+  # std::terminate() -> abort() under -fno-exceptions, which matches the
+  # _Exit(1) contract qwc already gives on fatal errors. Per-target so
+  # qwc-scalar and the googletest TUs are unaffected (googletest itself
+  # requires exceptions to compile its EXPECT_THROW machinery).
+  target_compile_options( qwc PRIVATE -fno-exceptions -fno-rtti )
+  # Drop .eh_frame emission from qwc's own TUs. Combined with -fno-exceptions
+  # above, our code has no use for unwind tables; the only consumer would be a
+  # crash-time debugger walking the stack across qwc frames, which is a luxury
+  # the side-project posture can do without. Does not affect libstdc++.a's
+  # own .eh_frame entries (those came pre-built).
+  target_compile_options( qwc PRIVATE -fno-asynchronous-unwind-tables -fno-unwind-tables )
+endif()
 qwc_configure( qwc )
 
 # Apply IPO/LTO to the qwc target only (qwc-scalar and qwc_tests stay

@@ -10,7 +10,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <numeric>
 #include <vector>
 
 #include "qwc_version.h"
@@ -142,7 +141,7 @@ void printHelp()
   );
 }
 
-std::optional<int> parseArgs( int argc, char** argv, Options& opt )
+std::optional<i32> parseArgs( i32 argc, char** argv, Options& opt )
 {
   // Track whether any count flag was given. With none, qwc prints lines, words
   // and bytes -- the three columns bare `wc` shows. Count flags accumulate (and
@@ -467,6 +466,34 @@ usize columnValue( const Counts& c, const Column col, const Options& opt )
   return 0;
 }
 
+// Side-channel for sortCompare: qsort takes no user-data pointer (unlike the
+// non-portable qsort_r), so printResults sets this before each qsort call.
+// Safe because printResults runs once on the main thread before exit.
+struct SortCtx
+{
+  const Options* opt;
+  const std::vector<Counts>* output;
+  const std::vector<usize>* sizes;
+  Column col;
+};
+const SortCtx* g_sortCtx = nullptr;
+
+i32 sortCompare( const void* pa, const void* pb )
+{
+  const usize a = *static_cast<const usize*>( pa );
+  const usize b = *static_cast<const usize*>( pb );
+  const SortCtx& ctx = *g_sortCtx;
+  if ( ctx.opt->sortMode == SortMode::Count ) {
+    const usize va = columnValue( ( *ctx.output )[a], ctx.col, *ctx.opt );
+    const usize vb = columnValue( ( *ctx.output )[b], ctx.col, *ctx.opt );
+    if ( va != vb ) return va < vb ? -1 : 1;
+  } else if ( ctx.opt->sortMode == SortMode::Size &&
+              ( *ctx.sizes )[a] != ( *ctx.sizes )[b] ) {
+    return ( *ctx.sizes )[a] < ( *ctx.sizes )[b] ? -1 : 1;
+  }
+  return std::strcmp( ctx.opt->files[a], ctx.opt->files[b] );
+}
+
 }  // namespace
 
 void printCounts(
@@ -504,7 +531,7 @@ void printResults( const Options& opt, const std::vector<Counts>& output )
   // one value to rank by otherwise -- so bare/multi-column qwc keeps the
   // collected order, exactly like wc.
   std::vector<usize> order( numFiles );
-  std::iota( order.begin(), order.end(), 0 );
+  for ( usize i = 0; i < numFiles; ++i ) order[i] = i;
 
   const bool single = opt.columnCount() == 1;
   if ( single && opt.sortMode != SortMode::None ) {
@@ -524,17 +551,15 @@ void printResults( const Options& opt, const std::vector<Counts>& output )
     }
 
     // Sort ascending by the chosen key, tie-broken by filename so output is
-    // deterministic regardless of which thread finished first.
-    std::sort( order.begin(), order.end(), [&]( const usize a, const usize b ) {
-      if ( opt.sortMode == SortMode::Count ) {
-        const usize va = columnValue( output[a], col, opt );
-        const usize vb = columnValue( output[b], col, opt );
-        if ( va != vb ) return va < vb;
-      } else if ( opt.sortMode == SortMode::Size && sizes[a] != sizes[b] ) {
-        return sizes[a] < sizes[b];
-      }
-      return std::strcmp( opt.files[a], opt.files[b] ) < 0;
-    } );
+    // deterministic regardless of which thread finished first. qsort instead
+    // of std::sort to keep introsort + heap-adjust + insertion-sort out of
+    // the static image (~16 KB on a cold --sort-by-* path); the comparator
+    // reaches its context via the g_sortCtx side-channel since qsort takes
+    // no user-data pointer.
+    const SortCtx ctx{ &opt, &output, &sizes, col };
+    g_sortCtx = &ctx;
+    std::qsort( order.data(), order.size(), sizeof( usize ), sortCompare );
+    g_sortCtx = nullptr;
   }
 
   // --top N keeps the N highest-ranked files: the tail of the ascending order.
