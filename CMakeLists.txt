@@ -157,15 +157,19 @@ set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp )
 #   the value-initialized `results` vector in `mapFiles`. A diagnostic with
 #   no source location cannot be silenced by any #pragma region, only by
 #   the command-line option.
-# - cli.cpp: -Wanalyzer-{null,possible-null}-argument against the
-#   `order.data()` argument to `std::qsort` in `printResults` (new on the
-#   binary-size branch; the analyzer thinks `order.data()` may be null
-#   even after `std::vector<usize> order(numFiles)`).
+# - cli.cpp: two flavours of the same `printResults` vector-modelling bug:
+#   * -Wanalyzer-{null,possible-null}-argument against the `order.data()`
+#     argument to `std::qsort` (new on the binary-size branch; the analyzer
+#     thinks `order.data()` may be null even after
+#     `std::vector<usize> order(numFiles)`);
+#   * -Wanalyzer-null-dereference against the `sizes[i] = stat(...)` write
+#     after `sizes.resize(numFiles)` -- the analyzer doesn't model that
+#     resize initialises the underlying storage.
 if( CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
   set_source_files_properties( src/main.cpp PROPERTIES
     COMPILE_OPTIONS "-Wno-analyzer-use-of-uninitialized-value" )
   set_source_files_properties( src/cli.cpp PROPERTIES
-    COMPILE_OPTIONS "-Wno-analyzer-null-argument;-Wno-analyzer-possible-null-argument" )
+    COMPILE_OPTIONS "-Wno-analyzer-null-argument;-Wno-analyzer-possible-null-argument;-Wno-analyzer-null-dereference" )
 endif()
 
 # ---------------------------------------------------------------------------
