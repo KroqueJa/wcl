@@ -42,6 +42,13 @@ usize wordsSplit( const std::string& s, const usize at, const WordsMode m = {} )
 const WordsMode kUtf8{ true, true };
 const WordsMode kUtf8Posix{ true, false };
 
+// Sub-row index helper: ((lead - 0xE0) << 6) | (cont1 & 0x3F). Matches the
+// kernel's lookup form and the generator's emission order.
+u8 candLead3Cell( u32 lead, u32 c1 )
+{
+  return kCandLead3[( ( lead - 0xE0u ) << 6 ) | ( c1 & 0x3Fu )];
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -60,6 +67,34 @@ TEST( IswprintTable, KnownClassifications )
   EXPECT_TRUE( qwcIswprint( 0x1F600 ) );  // emoji
   EXPECT_FALSE( qwcIswprint( 0xD800 ) );  // surrogate
   EXPECT_FALSE( qwcIswprint( 0x110000 ) );
+}
+
+// ---------------------------------------------------------------------------
+// kCandLead3: known (lead, cont1) sub-row classifications. Pins the table's
+// integrity end-to-end with the generator's contract.
+// ---------------------------------------------------------------------------
+TEST( CandLead3Table, KnownCells )
+{
+  // CJK Unified Ideographs: mostly CLEAN. U+4E00 (CJK) lives at E4 cont1=0xB8.
+  EXPECT_EQ( candLead3Cell( 0xE4, 0xB8 ), 0u ) << "E4 B8 (CJK U+4E00) clean";
+  // Hangul Syllables block: ED cont1=0x80 is CLEAN. 0x9E/0x9F hold unassigned
+  // holes (U+D7A4..D7AF), making them DIRTY -- pin a still-CLEAN value.
+  EXPECT_EQ( candLead3Cell( 0xED, 0x80 ), 0u ) << "ED 80 (Hangul U+D000) clean";
+  EXPECT_EQ( candLead3Cell( 0xED, 0x9D ), 0u ) << "ED 9D (Hangul U+D740) clean";
+  EXPECT_EQ( candLead3Cell( 0xED, 0x9E ), 1u ) << "ED 9E (Hangul holes) dirty";
+  // Surrogate sub-row: ED cont1=0xA0..0xBF is DIRTY.
+  EXPECT_EQ( candLead3Cell( 0xED, 0xA0 ), 1u ) << "ED A0 (surrogates) dirty";
+  // Overlong: E0 cont1=0x80..0x9F is DIRTY.
+  EXPECT_EQ( candLead3Cell( 0xE0, 0x80 ), 1u ) << "E0 80 (overlong) dirty";
+  EXPECT_EQ( candLead3Cell( 0xE0, 0x9F ), 1u ) << "E0 9F (overlong) dirty";
+  // Separator-bearing sub-rows are DIRTY in BOTH nbspace modes.
+  EXPECT_EQ( candLead3Cell( 0xE3, 0x80 ), 1u ) << "E3 80 (U+3000) dirty";
+  EXPECT_EQ( candLead3Cell( 0xE2, 0x80 ), 1u ) << "E2 80 (U+2000 area) dirty";
+  EXPECT_EQ( candLead3Cell( 0xE2, 0x81 ), 1u ) << "E2 81 (U+205F area) dirty";
+  EXPECT_EQ( candLead3Cell( 0xE1, 0x9A ), 1u ) << "E1 9A (U+1680 ogham) dirty";
+  // Devanagari: E0 cont1=0xA4..0xA5 is CLEAN. Pins the test corpus below.
+  EXPECT_EQ( candLead3Cell( 0xE0, 0xA4 ), 0u ) << "E0 A4 (Devanagari) clean";
+  EXPECT_EQ( candLead3Cell( 0xE0, 0xA5 ), 0u ) << "E0 A5 (Devanagari) clean";
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +270,79 @@ TEST( WordsUtf8, MatchesReferenceOnMixedText )
   EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
 }
 
+// Pure-CJK / Hangul / Devanagari word counting: in-block clean 3-byte
+// sequences. Equality with refWords proves the vector path stays bit-identical
+// to scalar after Task 5; before Task 5 the kernel punts these blocks to
+// scalarUtf8 and the equality holds trivially.
+TEST( WordsUtf8, PureCjkIdeographs )
+{
+  // Japanese: 日本語 (U+65E5 U+672C U+8A9E), repeated with ASCII separators.
+  // Exercises clean E6/E7/E8 lead sub-rows.
+  const std::string s =
+      "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E "
+      "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E "
+      "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E";
+  EXPECT_EQ( wordsStr( s, kUtf8 ), 3u );
+  EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+}
+
+TEST( WordsUtf8, PureHangulSyllables )
+{
+  // Korean: 안녕하세요 (U+C548 U+B155 U+D558 U+C138 U+C694), repeated.
+  // Exercises EC/EB plus the ED cont1<0x9E (Hangul main) sub-rows.
+  const std::string s =
+      "\xEC\x95\x88\xEB\x85\x95\xED\x95\x98\xEC\x84\xB8\xEC\x9A\x94 "
+      "\xEC\x95\x88\xEB\x85\x95\xED\x95\x98\xEC\x84\xB8\xEC\x9A\x94";
+  EXPECT_EQ( wordsStr( s, kUtf8 ), 2u );
+  EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+}
+
+TEST( WordsUtf8, Devanagari )
+{
+  // नमस्ते (U+0928 U+092E U+0938 U+094D U+0924 U+0947), repeated. Exercises
+  // E0 cont1=0xA4..0xA5 sub-rows (Devanagari block).
+  const std::string s =
+      "\xE0\xA4\xA8\xE0\xA4\xAE\xE0\xA4\xB8\xE0\xA5\x8D"
+      "\xE0\xA4\xA4\xE0\xA5\x87 "
+      "\xE0\xA4\xA8\xE0\xA4\xAE\xE0\xA4\xB8";
+  EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+}
+
+TEST( WordsUtf8, OverlongPuntsToScalar )
+{
+  // E0 80 80 would decode to U+0000; the vector cleanness gate rejects via the
+  // E0 cont1=0x80..0x9F overlong sub-row. Output must equal the scalar
+  // reference. Padded to >= 64 bytes so the vector loop is entered.
+  const std::string s =
+      "a\xE0\x80\x80"
+      "b c d";
+  EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+  const std::string padded =
+      std::string( 40, 'a' ) + s + std::string( 40, 'b' );
+  EXPECT_EQ( wordsStr( padded, kUtf8 ), refWords( padded, true ) );
+}
+
+TEST( WordsUtf8, SurrogateLeadPuntsToScalar )
+{
+  // ED A0 80 would encode U+D800. The ED cont1=0xA0..0xBF sub-row is DIRTY.
+  const std::string s =
+      "a\xED\xA0\x80"
+      "b c d";
+  EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+  const std::string padded =
+      std::string( 40, 'a' ) + s + std::string( 40, 'b' );
+  EXPECT_EQ( wordsStr( padded, kUtf8 ), refWords( padded, true ) );
+}
+
+TEST( WordsUtf8, IdeographicSpacePuntsToScalar )
+{
+  // U+3000 (E3 80 80) lives in a DIRTY sub-row. Padded to force the vector
+  // loop; output must equal scalar reference.
+  const std::string s =
+      std::string( 40, 'a' ) + "\xE3\x80\x80word" + std::string( 40, 'b' );
+  EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+}
+
 // ---------------------------------------------------------------------------
 // Split-independence: any buffer boundary (even mid-sequence) must agree.
 // ---------------------------------------------------------------------------
@@ -274,6 +382,52 @@ TEST( WordsSplit, CModeChunkedAgrees )
   EXPECT_EQ( whole, refWords( s ) );
   for ( usize chunk: { usize( 1 ), usize( 3 ), usize( 64 ), usize( 1024 ) } )
     EXPECT_EQ( wordsChunked( s, chunk ), whole ) << "chunk=" << chunk;
+}
+
+TEST( WordsSplit, Lead3StraddlesBit30 )
+{
+  // 3-byte CJK lead at offset 30: lead at bit 30, cont1 at bit 31 (in-block),
+  // cont2 at bit 32 (lookahead). Exercises the carryLead3a path.
+  std::string s( 30, 'a' );
+  s += "\xE6\x97\xA5";  // 日 (U+65E5) at offsets 30, 31, 32
+  s += std::string( 30, 'b' );
+  s += "\xE6\x9C\xAC";  // 本 (no special alignment, sanity check)
+  s += " ok";
+  const usize whole = wordsStr( s, kUtf8 );
+  EXPECT_EQ( whole, refWords( s, true ) );
+  for ( usize at = 0; at <= s.size(); ++at )
+    EXPECT_EQ( wordsSplit( s, at, kUtf8 ), whole ) << "split at " << at;
+}
+
+TEST( WordsSplit, Lead3StraddlesBit31 )
+{
+  // 3-byte CJK lead at offset 31: lead at bit 31, cont1 at bit 32, cont2 at
+  // bit 33. Exercises carryLead3b and the widened i+34<=len lookahead bound.
+  std::string s( 31, 'a' );
+  s += "\xE6\x97\xA5";  // bytes at offsets 31, 32, 33
+  s += std::string( 30, 'b' );
+  s += "\xE6\x9C\xAC ok";
+  const usize whole = wordsStr( s, kUtf8 );
+  EXPECT_EQ( whole, refWords( s, true ) );
+  for ( usize at = 0; at <= s.size(); ++at )
+    EXPECT_EQ( wordsSplit( s, at, kUtf8 ), whole ) << "split at " << at;
+}
+
+TEST( WordsSplit, MixedLead2AndLead3Carries )
+{
+  // Lead2 at bit 31 alongside Lead3 elsewhere: ensures the widened cont
+  // expression (lead2<<1 | lead3<<1 | lead3<<2 | carryC1 | carryC2) doesn't
+  // double-account a continuation. NBSP (C2 A0) at offset 31, CJK earlier in
+  // the same block.
+  std::string s( 10, 'a' );
+  s += "\xE6\x97\xA5";          // CJK at offsets 10..12
+  s += std::string( 18, 'a' );  // through offset 30
+  s += "\xC2\xA0";              // NBSP lead at offset 31, cont at offset 32
+  s += "word more";
+  const usize whole = wordsStr( s, kUtf8 );
+  EXPECT_EQ( whole, refWords( s, true ) );
+  for ( usize at = 0; at <= s.size(); ++at )
+    EXPECT_EQ( wordsSplit( s, at, kUtf8 ), whole ) << "split at " << at;
 }
 
 // ---------------------------------------------------------------------------
