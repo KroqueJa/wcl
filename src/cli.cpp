@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
 #include <vector>
 
 #include "qwc_version.h"
@@ -324,6 +325,39 @@ Workload Options::workload() const
 
 namespace {
 
+// Small hand-rolled RAII guards for the heap path and DIR* in walkDir below.
+// Under -fno-exceptions (Release) the would-be-throwing edges in walkDir
+// (std::vector::push_back, recursive walkDir) all degrade to terminate(),
+// so leaks are impossible there. Debug builds keep exceptions on per the
+// binary-size branch's CMake gate, and the previous manual std::free /
+// closedir pattern was exception-unsafe: GCC 16's -fanalyzer correctly
+// flagged that push_back's bad_alloc could unwind out of walkDir leaving
+// `path` and the DIR* leaked (GCC 13 doesn't model this; CI didn't catch
+// it). Two tiny structs in the project style; no <memory> include
+// (unique_ptr<DIR, decltype(&closedir)> works but the deleter-type spelling
+// at every call site doesn't pay rent for two sites).
+struct MallocOwner
+{
+  char* ptr;
+  ~MallocOwner() { std::free( ptr ); }
+  char* release()
+  {
+    char* p = ptr;
+    ptr = nullptr;
+    return p;
+  }
+  MallocOwner( const MallocOwner& ) = delete;
+  MallocOwner& operator=( const MallocOwner& ) = delete;
+};
+
+struct DirCloser
+{
+  DIR* d;
+  ~DirCloser() { closedir( d ); }
+  DirCloser( const DirCloser& ) = delete;
+  DirCloser& operator=( const DirCloser& ) = delete;
+};
+
 // "dir/name" in a fresh heap string the caller owns (the separator is omitted
 // after a trailing slash, so `qwc -r /` joins to "/etc", not "//etc").
 char* joinPath( const char* dir, const char* name )
@@ -356,26 +390,27 @@ bool walkDir(
     const char* dir, std::vector<const char*>& out, std::vector<char*>& owned
 )
 {
-  DIR* d = opendir( dir );
-  if ( !d ) return false;
+  DIR* dptr = opendir( dir );
+  if ( !dptr ) return false;
+  DirCloser d{ dptr };
   // Like the setlocale/nl_langinfo calls in main(): collectFiles runs on the
   // main thread before any workers are spawned, so the thread-safety warning
   // does not apply (and glibc's readdir is in fact safe on distinct DIR
   // streams; only sharing one stream races).
   // NOLINTNEXTLINE(concurrency-mt-unsafe)
-  while ( const dirent* e = readdir( d ) ) {
+  while ( const dirent* e = readdir( d.d ) ) {
     const char* name = e->d_name;
     if ( name[0] == '.' &&
          ( name[1] == '\0' || ( name[1] == '.' && name[2] == '\0' ) ) )
       continue;
-    char* path = joinPath( dir, name );
+    MallocOwner path{ joinPath( dir, name ) };
     // d_type is free when the filesystem provides it; DT_UNKNOWN means "go
     // ask" (lstat, so a symlink is still recognized as one), and a symlink is
     // followed one step (stat) to see whether a regular file is behind it.
     unsigned char type = e->d_type;
     if ( type == DT_UNKNOWN || type == DT_LNK ) {
       struct stat st{};
-      if ( type == DT_UNKNOWN && lstat( path, &st ) == 0 ) {
+      if ( type == DT_UNKNOWN && lstat( path.ptr, &st ) == 0 ) {
         if ( S_ISDIR( st.st_mode ) )
           type = DT_DIR;
         else if ( S_ISREG( st.st_mode ) )
@@ -383,19 +418,29 @@ bool walkDir(
         else if ( S_ISLNK( st.st_mode ) )
           type = DT_LNK;
       }
-      if ( type == DT_LNK && stat( path, &st ) == 0 && S_ISREG( st.st_mode ) )
+      if ( type == DT_LNK && stat( path.ptr, &st ) == 0 &&
+           S_ISREG( st.st_mode ) )
         type = DT_REG;
     }
     if ( type == DT_REG ) {
-      out.push_back( path );
-      owned.push_back( path );  // freed by ~Options
+      // Take ownership in `owned` first (so a bad_alloc from THIS push leaves
+      // path with its MallocOwner intact and the guard frees it during
+      // unwinding); release the guard so the second push's bad_alloc won't
+      // double-free (owned has it, ~Options will free it via opt.ownedPaths).
+      char* p = path.ptr;
+      owned.push_back( p );
+      path.release();
+      out.push_back( p );
       continue;
     }
-    if ( type == DT_DIR ) walkDir( path, out, owned );
-    std::free( path );
+    // For directories the recursive walkDir's own MallocOwner / DirCloser
+    // guards manage its allocations; if it throws, our `path` is freed by
+    // its MallocOwner during unwinding here, and `d` is closed by DirCloser.
+    if ( type == DT_DIR ) walkDir( path.ptr, out, owned );
+    // path's MallocOwner dtor runs at end of scope, freeing it (the DT_REG
+    // branch above continues out before this).
   }
-  closedir( d );
-  return true;
+  return true;  // ~DirCloser closes d.d
 }
 
 }  // namespace
@@ -531,7 +576,7 @@ void printResults( const Options& opt, const std::vector<Counts>& output )
   // one value to rank by otherwise -- so bare/multi-column qwc keeps the
   // collected order, exactly like wc.
   std::vector<usize> order( numFiles );
-  for ( usize i = 0; i < numFiles; ++i ) order[i] = i;
+  std::iota( order.begin(), order.end(), 0 );
 
   const bool single = opt.columnCount() == 1;
   if ( single && opt.sortMode != SortMode::None ) {

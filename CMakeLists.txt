@@ -147,15 +147,25 @@ message( STATUS "qwc: building ${QWC_COUNTLINES}, ${QWC_WORDS}, ${QWC_MAXLINE} a
 set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp )
 
 # GCC 13's -fanalyzer mis-models the libstdc++ vector constructor and reports
-# a bogus, LOCATION-LESS -Wanalyzer-use-of-uninitialized-value against the
-# value-initialized results vector in main.cpp's mapFiles. A diagnostic with
-# no source location cannot be silenced by any #pragma region, only by the
-# command-line option -- so mute exactly that check, only for this one TU,
-# only under GCC. (The option is inert without -fanalyzer; clang would warn
-# about the unknown -Wno- flag, hence the compiler gate.)
+# bogus warnings on two of our TUs. Mute exactly those checks, only for
+# those TUs, only under GCC. (The options are inert without -fanalyzer;
+# clang would warn about the unknown -Wno- flag, hence the compiler gate.)
+# GCC 16's analyzer no longer trips these (verified locally), but CI is
+# pinned to GCC 13.
+#
+# - main.cpp: LOCATION-LESS -Wanalyzer-use-of-uninitialized-value against
+#   the value-initialized `results` vector in `mapFiles`. A diagnostic with
+#   no source location cannot be silenced by any #pragma region, only by
+#   the command-line option.
+# - cli.cpp: -Wanalyzer-{null,possible-null}-argument against the
+#   `order.data()` argument to `std::qsort` in `printResults` (new on the
+#   binary-size branch; the analyzer thinks `order.data()` may be null
+#   even after `std::vector<usize> order(numFiles)`).
 if( CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
   set_source_files_properties( src/main.cpp PROPERTIES
     COMPILE_OPTIONS "-Wno-analyzer-use-of-uninitialized-value" )
+  set_source_files_properties( src/cli.cpp PROPERTIES
+    COMPILE_OPTIONS "-Wno-analyzer-null-argument;-Wno-analyzer-possible-null-argument" )
 endif()
 
 # ---------------------------------------------------------------------------
