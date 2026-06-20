@@ -56,6 +56,31 @@ static int cand_lead(unsigned lead)
   return 0;
 }
 
+/* The AVX2 words kernel's 3-byte extension certifies a (lead, cont1) sub-row
+ * for direct in-block vectorization iff every code point in it is iswprint
+ * AND is NOT a separator in either nbspace mode. Locale-invariant: every
+ * separator sub-row contains a separator in BOTH modes, so the mode flag has
+ * no effect on the table. Overlong (E0 cont1<0xA0) and surrogate (ED cont1
+ * in 0xA0..0xBF) sub-rows are dirty by the codepoint-validity check. Returns
+ * 1 (= DIRTY, block punts) when any cont2 byte hits one of these conditions;
+ * 0 (= CLEAN) otherwise. */
+static int cand_lead3(unsigned lead, unsigned c1)
+{
+  unsigned c2;
+  for (c2 = 0x80; c2 <= 0xBF; ++c2) {
+    unsigned cp = ((lead & 0x0Fu) << 12) | ((c1 & 0x3Fu) << 6) | (c2 & 0x3Fu);
+    /* Overlong: 3-byte sequences must encode cp >= 0x800. */
+    if (cp < 0x800) return 1;
+    /* Surrogates: never valid Unicode scalar values. */
+    if (cp >= 0xD800 && cp <= 0xDFFF) return 1;
+    if (!iswprint((wint_t)cp)) return 1;
+    /* Locale-invariant separator gate: dirty if cp is a separator under
+     * EITHER nbspace mode. */
+    if (is_sep(cp, 0) || is_sep(cp, 1)) return 1;
+  }
+  return 0;
+}
+
 int main(void)
 {
   if (!setlocale(LC_CTYPE, "C.UTF-8") && !setlocale(LC_CTYPE, "C.utf8")) {
@@ -103,6 +128,20 @@ int main(void)
   printf("static const u8 kCandLead[256] = {\n");
   for (unsigned b = 0; b < 256; ++b)
     printf("%d,%s", cand_lead(b), (b % 32 == 31) ? "\n" : "");
+  printf("};\n");
+  printf("\n// Candidate 3-byte (lead, cont1) sub-rows for the AVX2 words\n");
+  printf("// kernel. Indexed by ((lead - 0xE0) << 6) | (cont1 & 0x3F). A 0\n");
+  printf("// (CLEAN) cell means every codepoint in this 64-cp sub-row is\n");
+  printf("// iswprint and not a separator in either nbspace mode -- safe to\n");
+  printf("// vectorize. A 1 (DIRTY) cell forces the block to scalarUtf8. See\n");
+  printf("// cand_lead3() in scripts/gen-iswprint-table.c.\n");
+  printf("static const u8 kCandLead3[1024] = {\n");
+  for (unsigned L = 0xE0; L <= 0xEF; ++L) {
+    for (unsigned C = 0x80; C <= 0xBF; ++C) {
+      unsigned idx = ((L - 0xE0u) << 6) | (C & 0x3Fu);
+      printf("%d,%s", cand_lead3(L, C), (idx % 32 == 31) ? "\n" : "");
+    }
+  }
   printf("};\n");
   return 0;
 }
