@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Unified qwc benchmark sweep. Drives benchmarks/bench.py across the six
-# bench corpora and prints per-step wall time.
+# Unified qwc benchmark sweep. Drives benchmarks/bench.py across the bench
+# corpora and prints per-step wall time.
 #
 # Default: LTO candidate, qwc + latest-release columns only (no uu-wc /
 # GNU wc), both locales (LC_ALL=C and LC_ALL=C.UTF-8) per
@@ -90,6 +90,7 @@ corpora=(
   "short|benchmarks/test-data/short|Short lines (256 MiB)"
   "single-line|benchmarks/test-data/single-line|Single line (256 MiB)"
   "cjk-short|benchmarks/test-data/cjk-short.txt|CJK 3-byte UTF-8 short lines (256 MiB)"
+  "cyrillic-short|benchmarks/test-data/cyrillic-short.txt|Cyrillic 2-byte UTF-8 short lines (256 MiB)"
 )
 
 bench_args=()

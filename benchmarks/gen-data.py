@@ -31,12 +31,31 @@ MULTIBYTE_WORDS = [
     "café", "naïve", "résumé", "Über", "jalapeño", "façade", "Zürich",
     "Москва", "日本語", "你好", "안녕하세요", "Ελλάδα", "emoji😀here",
 ]
+# Cyrillic-only pool, used when --utf8-class=cyrillic. Kept separate from
+# MULTIBYTE_WORDS so the historical `mixed` distribution stays byte-identical
+# (existing corpora reproduce bit-for-bit on regen).
+CYRILLIC_WORDS = [
+    "дом", "мир", "лес", "кот", "пёс", "друг", "мать", "отец", "брат",
+    "сестра", "сын", "дочь", "утро", "вечер", "ночь", "день", "год", "час",
+    "минута", "секунда", "лето", "зима", "весна", "осень", "солнце", "луна",
+    "звезда", "небо", "земля", "гора", "река", "море", "ветер", "дождь",
+    "снег", "лёд", "огонь", "дерево", "цветок", "трава", "путь", "мост",
+    "окно", "дверь", "стол", "стул", "кровать", "книга", "школа", "работа",
+    "учитель", "ученик", "хлеб", "чай", "кофе", "вода", "человек", "женщина",
+    "мужчина", "ребёнок", "семья", "город", "страна", "улица", "площадь",
+    "парк", "читать", "писать", "говорить", "слушать", "видеть", "думать",
+    "большой", "маленький", "новый", "старый", "добрый", "здравствуй",
+    "привет", "спасибо", "пожалуйста", "хорошо", "плохо", "далеко", "близко",
+    "быстро", "медленно",
+]
 ASCII_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 
 
 def _filter_multibyte(words: list, utf8_class: str) -> list:
     """Keep only the multibyte words whose UTF-8 encoding length matches.
     `mixed` returns the input unchanged so existing corpora stay byte-identical.
+    `cyrillic` returns the dedicated Cyrillic pool (script-filtered, not
+    length-filtered).
 
     The classifier is per-character: a word qualifies if every non-ASCII
     character in it has the requested encoding length. Pure-ASCII words are
@@ -44,6 +63,8 @@ def _filter_multibyte(words: list, utf8_class: str) -> list:
     multibyte class)."""
     if utf8_class == "mixed":
         return words
+    if utf8_class == "cyrillic":
+        return CYRILLIC_WORDS
     want = {"2byte": 2, "3byte": 3, "4byte": 4}[utf8_class]
     kept = []
     for w in words:
@@ -237,6 +258,10 @@ def generate_bench_corpora(out_dir: str, seed: int) -> None:
         # 3-byte-UTF-8 stress: 100% CJK words at short-line shape. Used by
         # Rung 1 of the perf-observe workflow (scripts/bench/perf-annotate.sh).
         ("cjk-short.txt", "short",     1.0,  "3byte"),
+        # 2-byte-UTF-8 stress: 100% Cyrillic words at short-line shape. Shows
+        # up alongside cjk-short in the bench tables so the 2-byte path has
+        # its own marked cell.
+        ("cyrillic-short.txt", "short", 1.0, "cyrillic"),
     ]
     for filename, shape, mbfrac, utf8_class in singles:
         path = os.path.join(out_dir, filename)
@@ -291,13 +316,15 @@ def main() -> None:
                           "(default, historical 3-18 word lines with 1%% long "
                           "spikes), long (2-8 KiB), single-line (one line)"))
     ap.add_argument("--utf8-class", default="mixed",
-                    choices=["mixed", "2byte", "3byte", "4byte"],
+                    choices=["mixed", "2byte", "3byte", "4byte", "cyrillic"],
                     help=("filter MULTIBYTE_WORDS by UTF-8 encoding length. "
                           "mixed (default) keeps the historical pool unchanged; "
                           "non-mixed drops every word that has a multibyte "
-                          "character outside the requested length class."))
+                          "character outside the requested length class. "
+                          "cyrillic substitutes a dedicated Russian-word pool "
+                          "instead of length-filtering."))
     ap.add_argument("--bench-corpora", action="store_true",
-                    help=("regenerate the six bench-sweep corpora at 256 MiB "
+                    help=("regenerate the bench-sweep corpora at 256 MiB "
                           "each into --out-dir. Used by scripts/bench/sweep.sh "
                           "to set up a fresh box; idempotent on repeat runs. "
                           "Requires --out-dir; --size/--out/--many ignored."))
