@@ -76,6 +76,57 @@ inline u32 asciiPrint( const __m256i v )
   ) );
 }
 
+// Walk the set bits of lead3 and probe kCandLead3 for each. The pragma pair
+// was measured, not guessed; this is the rationale for each half.
+//
+// Inlined into words(), this walk pushed the function from 1051 to 1140
+// instructions (+8.5%), which shifted the C-locale exit branch 432 bytes
+// deeper into .text and cost ~4% wall on every C-locale `-w` cell of the
+// sweep -- with identical executed-instruction counts on `big -w` (perf stat
+// -r 10: 868.5M vs 868.4M), so the regression was purely binary layout, not
+// algorithmic. Extracting to this helper without the attributes shrank
+// words() to 1113 instructions and reduced the regression but did not close
+// it. The attributes together did close it (in fact flipped `big -w` to 4%
+// faster than v0.2.1):
+//
+//   [[gnu::noinline]] -- forbids GCC re-inlining the walk back into words()
+//   once it can see the body's size is small enough. Without this,
+//   [[gnu::cold]] alone does not stop the size-based inliner.
+//
+//   [[gnu::cold]] -- places the function in .text.unlikely (off the hot
+//   icache path) AND, more consequentially here, drops the walk's
+//   instruction count from GCC's whole-function size estimate for words().
+//   That changed enough inlining decisions in the UNTOUCHED C-locale branch
+//   to save ~1 instruction per 32-byte block (-9M instructions on the
+//   256 MiB `big -w` run, from 868.5M to 859.4M). The C-locale path never
+//   calls this helper; the win is purely from GCC seeing words() as smaller
+//   for its inlining heuristics.
+//
+// Net effect on the perf-sensitive cells: CJK win unchanged at ~3.15x cycles
+// (lead3 is hot per block, but the call overhead is negligible next to the
+// kCandLead3 cache probes inside); non-CJK C-locale paths recover their
+// pre-branch baseline and then some.
+//
+// If a future tweak makes words() grow again and the C-locale sweep starts
+// regressing despite identical instruction counts, re-check the
+// inlined-vs-extracted sizes via objdump/nm before chasing algorithmic
+// causes -- see qwc-companion/CLAUDE.md "Diagnosing small regressions" for
+// the workflow.
+[[gnu::noinline, gnu::cold]] bool lead3SubrowDirty(
+    const u8* p, const u32 lead3
+)
+{
+  u32 leads = lead3;
+  while ( leads != 0 ) {
+    const u32 b = static_cast<u32>( __builtin_ctz( leads ) );
+    leads &= leads - 1;
+    const u8 L = p[b];
+    const u8 C = p[b + 1];  // in-block (b<=29) or lookahead (b=30,31)
+    if ( kCandLead3[( ( L - 0xE0u ) << 6 ) | ( C & 0x3Fu )] != 0 ) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 void words(
@@ -153,20 +204,8 @@ void words(
           }
         }
       }
-      if ( clean ) {
-        u32 leads = lead3;
-        while ( leads != 0 ) {
-          const u32 b = static_cast<u32>( __builtin_ctz( leads ) );
-          leads &= leads - 1;
-          const u8 L = base[i + b];
-          const u8 C =
-              base[i + b + 1];  // in-block (b<=29) or lookahead (b=30,31)
-          if ( kCandLead3[( ( L - 0xE0u ) << 6 ) | ( C & 0x3Fu )] != 0 ) {
-            clean = false;
-            break;
-          }
-        }
-      }
+      if ( clean && lead3 != 0 && lead3SubrowDirty( base + i, lead3 ) )
+        clean = false;
       if ( !clean ) {
         // Scalar-classify just this block; it consumes whole code points, so
         // resume at the first unconsumed byte with no pending carries.
