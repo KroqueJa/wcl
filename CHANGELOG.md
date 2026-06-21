@@ -4,7 +4,7 @@ Notable, user-visible changes to `qwc`. Format follows
 [Keep a Changelog](https://keepachangelog.com); the changelog is hand-curated,
 not generated from commit messages.
 
-## [unreleased]
+## [0.3.0] - 2026-06-21
 
 ### Performance
 
