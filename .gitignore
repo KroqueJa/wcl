@@ -1,6 +1,7 @@
 # IDEs and venvs
 .idea
 .venv
+.cache
 
 # Binaries
 qwc*
