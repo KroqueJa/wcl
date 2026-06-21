@@ -7,8 +7,34 @@ Why is it faster than the above mentioned byte counters? Many reasons:
 2. It employs a novel SIMD-based, threaded architecture that is both faster and more cache-efficient than the traditional scalar approach. It is not faster on a single-core machine.
 3. It is written by someone who constantly tinkers to make it faster instead of shipping more useful features.
 
+# Installation
+
+## Homebrew
+```shell
+brew install kroqueja/qwc/qwc
+qwc --version
+```
+
+## Binaries
+Grab the latest release binary (the link always points at the newest tag):
+
+```sh
+# Linux x86-64 (needs an AVX2-capable CPU -- anything from ~2015 onward)
+curl -fsSL https://github.com/KroqueJa/qwc/releases/latest/download/qwc-linux-x86_64.tar.gz | tar xz
+
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/KroqueJa/qwc/releases/latest/download/qwc-macos-arm64.tar.gz | tar xz
+```
+
+This drops a `qwc` binary in the current directory; move it somewhere on your
+`PATH` (e.g. `mv qwc ~/.local/bin/`). Check what you got with `qwc --version`.
+
+On any other platform (or a pre-AVX2 CPU), build from source: clone the repo
+and run `cmake -S . -B build && cmake --build build` -- the build picks the
+right SIMD (or scalar) implementation for your machine automatically.
+
 # Benchmarks
-These benchmarks are somewhat arbitrary; they run on a non-dedicated machine and can be somewhat jittery. There exists a github action to inspect partial results independently while developing, but that runs on virtual cores and is very unreliable. Hence, these benchmarks are published as a somewhat unreliable snapshot of the current state.
+These benchmarks are somewhat arbitrary; they run on a non-dedicated machine and can be jittery. There exists a github action to inspect partial results independently while developing, but that runs on virtual cores and is very unreliable. Hence, these benchmarks are published as an unreliable snapshot of the current state.
 
 The benchmarks run on different corpora, here sorted by subheader. The corpora are generated, and designed to be spread among general, best-case (for some flags) and maximally adversarial (for the same flags). The most interesting column, in my view, is the "vs uu-wc" column - if you care about byte counting speed at all, that is the closest competitor. It should be mentioned once more that `qwc` is not "simply better" than `uu-wc` for these use cases - it utilizes threads more aggressively, but _is allowed to do so_ (probably) because of concessions in the area of locale correctness. `qwc` is currently guaranteed to be correct for the C and UTF-8 locales only which allows for more aggressive optimizations in the code.
 
@@ -221,32 +247,6 @@ host: 6 logical CPUs (qwc threads to this) · Intel(R) Core(TM) i7-8700 CPU @ 3.
 | C.UTF-8 / -l -w | 65.3 | 67.5 | 1176.7 | 2586.2 | 1.03x | 18.03x | 39.64x |
 | C.UTF-8 / -l -L | 42.7 | 42.7 | 1217.9 | 3097.9 | 1.00x | 28.55x | 72.62x |
 | C.UTF-8 / -l -w -m | 66.8 | 68.6 | 1257.3 | 2584.5 | 1.03x | 18.83x | 38.72x |
-
-# Installation
-
-## Homebrew
-```shell
-brew install kroqueja/qwc/qwc
-qwc --version
-```
-
-## Binaries
-Grab the latest release binary (the link always points at the newest tag):
-
-```sh
-# Linux x86-64 (needs an AVX2-capable CPU -- anything from ~2015 onward)
-curl -fsSL https://github.com/KroqueJa/qwc/releases/latest/download/qwc-linux-x86_64.tar.gz | tar xz
-
-# macOS (Apple Silicon)
-curl -fsSL https://github.com/KroqueJa/qwc/releases/latest/download/qwc-macos-arm64.tar.gz | tar xz
-```
-
-This drops a `qwc` binary in the current directory; move it somewhere on your
-`PATH` (e.g. `mv qwc ~/.local/bin/`). Check what you got with `qwc --version`.
-
-On any other platform (or a pre-AVX2 CPU), build from source: clone the repo
-and run `cmake -S . -B build && cmake --build build` -- the build picks the
-right SIMD (or scalar) implementation for your machine automatically.
 
 # How AI is used in this project
 I feel that it's important to state that the core of this project is designed, benchmarked, and implemented by myself. The first version of the project, then called `wcl`, is from a time when AI was not a thing to the extent that it is today in 2026. This is not to say that AI does not play a significant part in the development of the project. AI has enabled rapid development on time-consuming tasks. I'll leave it to Claude itself to tell you what it has done:
