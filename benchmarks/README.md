@@ -1372,6 +1372,244 @@ Silicon users a meaningful generation behind on CJK throughput.
   hot, the prior "dense bitmap is too big" line item drops in priority.
   TODO accordingly.
 
+## Finding 14 — TMA classification of the `-L` kernel on long-line input
+
+Rung 2 of the "observe before guessing" upgrade lands a thin
+`scripts/bench/toplev.sh` wrapper around `toplev.py` (Andi Kleen's
+`pmu-tools`), then uses it to classify pipeline slots on the AVX2
+`maxLineLen` kernel at the microarchitecture level — one rung above
+Finding 12's per-instruction attribution. This is observation, not a
+hypothesis test: the output amends **Finding 7**'s wall-clock-derived
+ceiling claim and feeds a future "TMA redux" branch that would
+re-examine Findings 8/9/10 with the same workflow.
+
+### Methodology
+
+Binary: the `./qwc-perf` `RelWithDebInfo` build from Rung 1.
+Wrapper: `scripts/bench/toplev.sh <flag> <corpus>` which invokes
+`toplev.py -l3 --no-desc --global -- ./qwc-perf <flag> <corpus>`.
+Setup: `pmu-tools` cloned to any path with `toplev.py` symlinked onto
+PATH; `kernel.perf_event_paranoid=-1` (CPU event access; `≤1` is
+sufficient for Rung 1 but not for Rung 2). `scripts/bench/prep.sh
+apply` was NOT applied — Finding 12 also ran at OS defaults; the
+reproducibility check below quantifies what that costs.
+
+Three measurements + one reproducibility re-run, all under `LC_ALL=C.UTF-8`:
+
+```sh
+sudo sysctl kernel.perf_event_paranoid=-1   # one-time, per boot
+scripts/bench/toplev.sh -L benchmarks/test-data/long   # headline
+scripts/bench/toplev.sh -L benchmarks/test-data/short  # geometry contrast
+scripts/bench/toplev.sh -l benchmarks/test-data/long   # cross-flag sanity
+scripts/bench/toplev.sh -L benchmarks/test-data/long   # repro
+```
+
+**The `--global` is load-bearing.** A first pass without it produced
+per-core breakdowns where the same workload classified C0 as 38%
+Backend on one run and 78% Backend on the next — that's worker-thread
+migration across cores, not noise. `--global` aggregates all CPUs into
+one readout, which is the right view for qwc's `hardware_concurrency()`-
+sized worker pool. The wrapper bakes this in; the variation is in the
+script comment for cases that genuinely want per-core / per-thread.
+
+### Results
+
+Top-level slot percentages (multiplex error in `[brackets]`):
+
+| Run                  | Backend | BE/Memory | BE/Core | Frontend.FL | Bad_Spec |
+|----------------------|--------:|----------:|--------:|------------:|---------:|
+| long `-L` (run 1)    |   76.2% |    56.6%  |   19.6% |       23.2% |     0.0% |
+| long `-L` (run 2)    |   77.2% |    58.1%  |   19.1% |       24.1% |     0.0% |
+| long `-l`            |   67.5% |    51.2%  |   16.3% |       18.5% |     0.0% |
+| short `-L` (contrast) |  25.1% |     —     |   14.1% |       17.2% |  **23.4%** |
+
+Multiplex error is 6–7% on the long-input cells (the cell ran for ≈1.2 s
+total wall, which is a borderline budget for `-l3`'s event-group count);
+2% on short `-L`. The leaf decomposition under `BE/Memory` is muddy on
+every run — `L1_Bound` / `L2_Bound` / `L3_Bound` / `DRAM_Bound` all
+report zero or near-zero counts because the leaf events fell in
+multiplex slices that didn't sample them. The top-level `BE/Memory`
+number is the load-bearing signal; reading down to specific cache
+levels is out of reach with default counter scheduling.
+
+### Reading vs Finding 7
+
+Finding 7 concluded that the AVX2 newline-free fast path was a null
+because the `maxLineLen` kernel on long input was already at the DRAM
+bandwidth ceiling — a conclusion *deduced* from wall-clock bandwidth
+matching the platform's memory throughput. TMA confirms the upstream
+half of that deduction directly: **76–77% of pipeline slots on long
+`-L` are Backend-Bound, of which 57% are Memory-Bound and 20% are
+Core-Bound.** The bound is real and dominant at the microarchitecture
+level. The downstream half — *which* level of memory hierarchy (L3 vs
+DRAM) — is multiplex-blocked here and remains an inference rather than
+a measurement. Net effect on Finding 7's claim: stronger evidence that
+the kernel is binary-level-ceiling-bound, no new information about
+which cache level the bound sits at.
+
+### Geometry contrast: short `-L`
+
+The contrast cell is the most surprising number in the table. Same
+kernel, same byte distribution (both `long` and `short` corpora are
+~8% multibyte), opposite line geometry — and the **top bound flips
+from Backend-Memory (long) to Bad_Speculation (short)**. On short
+input, `maxLineLen`'s per-byte newline-locating step hits frequent
+mispredicted branches (23.4% of slots is Branch_Mispredicts;
+`Branch_Resteers` accounts for another 7.3% of clock cycles under
+Frontend.Fetch_Latency). The kernel cost-model is not a property of
+the kernel; it is a property of the workload geometry, and the
+geometry switches the binary-level ceiling story.
+
+This is directly relevant to Finding 8 (the `-l -w` fusion null on
+short input). Finding 8's wall-clock conclusion was that fusing the
+newline tally into the words kernel cost more than it saved on short
+ASCII; the Bad_Speculation signal here suggests the cost-model is
+specifically branch-misprediction-driven, which is a different rescue
+shape than Finding 8 considered.
+
+### Cross-flag sanity: long `-l`
+
+`-l` and `-L` share the per-byte newline-locating step on AVX2; the
+TMA profile should look similar. It does: `-l` lands at 67.5%
+Backend / 51.2% Memory_Bound / 16.3% Core_Bound — 5–8pp lower than
+`-L` on every metric, which tracks with `-l`'s simpler per-byte work
+(count newlines; no running max). No surprise here; the sanity check
+passes.
+
+### Reproducibility
+
+The two long `-L` runs land within ±1.5pp on every top-level slot
+category (76.2% vs 77.2% Backend; 56.6% vs 58.1% BE/Mem; 19.6% vs
+19.1% BE/Core; 23.2% vs 24.1% Frontend.FL). The 7% multiplex error is
+visible in the per-run variance but does not flip rankings or change
+the qualitative story. **The reading is signal, not noise** at the
+top-level slot category — adequate for the Finding 7 amendment, the
+geometry-contrast story, and the redux verdict below.
+
+Caveat for finer-grained work: the multiplex-blocked leaf
+decomposition (which cache level under BE/Memory) is NOT
+reproducible — `L1_Bound` was 0.0 on run 1 and 11.2 on run 2. A leaf-
+accurate measurement would need `--no-multiplex` with a restricted
+counter group, taking multiple runs to cover the level-3 hierarchy
+piecewise. Out of scope here; flagged for the redux branch if a
+specific question demands it.
+
+### Verdict on the future "TMA redux" branch
+
+**Worth doing.** Top-level slot classification reads sharp and
+decisive at qwc's wall-time scale (~1.2 s on the 256 MiB headline
+cell); reproducibility is within ±2pp; the geometry-contrast finding
+on short `-L` is a positive signal that TMA generates net-new
+information rather than re-derivating per-instruction attribution at
+a different resolution. Specifically:
+
+- **Finding 8 redux** (`-l -w` fusion on short input) gets a sharp
+  predicted classification: Bad_Speculation, driven by per-byte
+  newline-boundary mispredicts. That's a different rescue shape from
+  Finding 8's wall-clock-only consideration and worth the redux pass.
+- **Finding 9 redux** (PGO `-w` regression) and **Finding 10 redux**
+  (strip-mine) — the long-input cell is the tractable substrate;
+  both should get clean readings.
+
+Caveat: the leaf decomposition (which cache level, which port) is
+multiplex-blocked at `-l3` on the current wall-time budget. The redux
+branch should plan to run `--no-multiplex` on a restricted counter
+group for any question that needs leaf-accurate signal — that's
+multiple runs covering the hierarchy piecewise, not a single
+invocation.
+
+### TMA observation workflow
+
+Workflow doc (permanent infrastructure — read this before the next
+`toplev.py` campaign):
+
+**One-time setup.** `pmu-tools` is not packaged on Arch (no `extra/`,
+no AUR). Clone the upstream repo somewhere stable and symlink
+`toplev.py` onto your PATH:
+
+```sh
+git clone https://github.com/andikleen/pmu-tools <somewhere>
+ln -sfn <somewhere>/toplev.py <a-dir-on-your-PATH>/toplev.py
+```
+
+The wrapper resolves `toplev.py` via PATH and doesn't care where the
+clone lives. `pmu-tools` ships event JSONs that update with new
+microarchitectures; a `git pull` keeps current — no version pinning
+in the wrapper.
+
+**Wrapper.** `scripts/bench/toplev.sh <flag> <corpus>` runs
+`toplev.py -l3 --no-desc --global -- ./qwc-perf <flag> <corpus>`.
+Env knobs: `QWC_PERF_LOCALE` (default `C.UTF-8`), `QWC_BIN` (default
+`./qwc-perf` — reused from Rung 1; no separate build).
+
+**`--global` is load-bearing.** qwc spawns `hardware_concurrency()`
+worker threads that migrate across cores; per-core TMA breakdowns are
+dominated by worker-migration variance rather than kernel-cost signal
+(Finding 14's first-pass measurement saw 38% Backend on C0 in run 1,
+78% on the same core in run 2). `--global` aggregates all CPUs into
+one readout — the right view for the workload. Override via the
+common variations below if you need per-core / per-thread instead.
+
+**`perf_event_paranoid` gotcha.** Rung 2 needs CPU event access,
+which the kernel blocks at `≥1` — *stricter than Rung 1's
+`cycles:pp`-only requirement*. The wrapper demands `≤ -1` and prints
+a one-line fix. `sudo sysctl kernel.perf_event_paranoid=-1` is
+per-boot; pin in `/etc/sysctl.d/` for permanence. (Sysadmins running
+shared boxes have a real reason to keep this high; `-1` lifts almost
+all restrictions.)
+
+**Reading the four top categories.** Every slot is classified into
+one of four:
+
+- **Frontend_Bound** — pipeline is starved waiting for instructions
+  (icache, ITLB, branch resteers, decoder issues).
+- **Backend_Bound** — pipeline has instructions but can't retire
+  them. Two sub-categories: **Memory_Bound** (caches, DRAM) and
+  **Core_Bound** (execution-port saturation, divider, serializing
+  ops).
+- **Bad_Speculation** — pipeline ran instructions that turned out to
+  be on the wrong branch (mispredict) or had to be flushed
+  (machine_clears).
+- **Retiring** — useful work. Higher is better.
+
+The level-3 view drills into the dominant category's sub-leaves
+(e.g., `BE/Memory.L1_Bound`, `BE/Memory.L3_Bound`, `BE/Memory.DRAM_Bound`).
+Escalate to `-l6` only if `-l3` doesn't decompose far enough; the
+default starting point is `-l3`.
+
+**Multiplex caveat.** `-l3` needs more counter groups than the CPU
+has hardware slots, so toplev multiplexes — time-slices counters
+across the run and extrapolates. On sub-2-second qwc workloads the
+multiplex error on top-level slot categories is around 6–7%
+(quantified in Finding 14's reproducibility check), and leaf
+categories under the top can swing wildly between runs (Finding 14's
+`L1_Bound` was 0.0 on one run and 11.2 on the next). The fallback
+when leaf-accurate signal is needed: `--no-multiplex` with a
+restricted counter group, taking multiple runs to cover the level-3
+hierarchy piecewise.
+
+**Bench-prep.** `scripts/bench/prep.sh apply` is recommended for any
+measurement whose number is going to be quoted as authoritative.
+Finding 14 skipped it (matching Finding 12's precedent — the
+workflow doc is the deliverable, not a precision number); future
+campaigns using this workflow should apply prep first if a leaf-level
+number needs defending.
+
+**Common variations** (run `toplev.py` directly for these):
+
+- `-l1` / `-l6` — different drill-down depth.
+- `--per-thread` — per-CPU-thread breakdown instead of global.
+- `--core C0-C5` — limit to specific cores.
+- `--no-multiplex` — accuracy at the cost of hierarchy depth.
+- `--csv ';'` — machine-parsable output.
+
+**What Rung 2 doesn't answer.** Region-scoped instrumentation
+(measure a specific kernel function rather than the whole binary)
+and static port-pressure analysis on a single inner loop are
+out-of-band questions. Rung 3 (`likwid` markers + `llvm-mca`,
+separate branch in `TODO.md`'s `## Next`) is the escalation when
+TMA's whole-binary view runs out of explanatory power.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers
