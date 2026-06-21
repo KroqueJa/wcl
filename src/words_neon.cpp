@@ -20,9 +20,15 @@
 //
 // C mode: S = ASCII whitespace, P = 0x21..0x7E, every full block vectorizes.
 // UTF-8 mode vectorizes exactly the content it can classify bit-for-bit like
-// the scalar kernel: ASCII, plus well-formed 2-byte sequences whose lead the
-// generated kCandLead table certifies as "clean". Anything else punts that one
-// block to the scalar classifier, so the kernels agree on ALL input.
+// the scalar kernel: ASCII, plus well-formed 2- AND 3-byte sequences whose lead
+// (resp. (lead, cont1) sub-row) the generated kCandLead / kCandLead3 tables
+// certify as "clean" (every code point in the row/sub-row is printable and
+// non-separator, bar the exact C2 windows: U+0080-009F non-printable, U+00A0
+// the nbspace separator). Anything else -- 4-byte sequences, invalid bytes,
+// dirty leads like 0xCE (the U+03A2 unassigned hole) or 0xE3 (contains U+3000
+// ideographic space) -- punts that one block to the scalar classifier, so the
+// kernels agree on ALL input. ASCII-dominant, Latin-ish and CJK / Hangul /
+// Devanagari text stays fully vectorized.
 
 using namespace qwc::words_kernel;
 
@@ -102,6 +108,29 @@ inline u32 asciiPrint( const Blk& v )
   return mm( rangeHalf( v.lo, 0x21, 0x7E ), rangeHalf( v.hi, 0x21, 0x7E ) );
 }
 
+// Walk the set bits of lead3 and probe kCandLead3 for each. Mirrors the AVX2
+// helper of the same name -- pure scalar, no NEON -- so the table probe is
+// identical across ISAs. The [[gnu::noinline, gnu::cold]] pair was measured on
+// GCC/x86 to fix a binary-layout regression in words() (see words_avx2.cpp for
+// the full rationale and qwc-companion/CLAUDE.md "Diagnosing small
+// regressions"). Kept here to match the AVX2 structure; on clang/AArch64 the
+// inliner heuristics differ, so its effect on this side is an empirical
+// question settled by the C-locale + CJK sweep, not assumed.
+[[gnu::noinline, gnu::cold]] bool lead3SubrowDirty(
+    const u8* p, const u32 lead3
+)
+{
+  u32 leads = lead3;
+  while ( leads != 0 ) {
+    const u32 b = static_cast<u32>( __builtin_ctz( leads ) );
+    leads &= leads - 1;
+    const u8 L = p[b];
+    const u8 C = p[b + 1];  // in-block (b<=29) or lookahead (b=30,31)
+    if ( kCandLead3[( ( L - 0xE0u ) << 6 ) | ( C & 0x3Fu )] != 0 ) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 void words(
@@ -122,29 +151,50 @@ void words(
     return;
   }
 
-  // UTF-8 parameterization. Each vector block needs one byte of lookahead (the
-  // second byte of a window whose lead sits at bit 31), hence the i + 33 <= len
-  // bound. The carries thread a block-straddling sequence into the next block:
-  // carryLead = a clean lead at bit 31 (its continuation is the next block's
-  // bit 0), carryS/carryN = that continuation's smeared class. They live in
-  // locals, not WordScan, because no block ever straddles a words() call -- the
-  // epilogue is always scalar.
-  u32 carryS = 0, carryN = 0, carryLead = 0;
-  while ( i + 33 <= len && i + 32 <= ownedEnd ) {
+  // UTF-8 parameterization. Each vector block needs up to two bytes of
+  // lookahead (a clean 3-byte lead at bit 31 needs cont1 at byte 32 and cont2
+  // at byte 33), hence the i + 34 <= len bound. The carries thread a
+  // block-straddling sequence into the next block. carryLead2 = a clean 2-byte
+  // lead at bit 31 (cont at next bit 0). carryLead3a = a clean 3-byte lead at
+  // bit 30 (cont1 in-block at bit 31, cont2 spills to next bit 0).
+  // carryLead3b = a clean 3-byte lead at bit 31 (cont1 spills to next bit 0,
+  // cont2 to next bit 1). carryS/carryN smear the C2 windows' separator /
+  // non-printable class across both bytes of a 2-byte sequence that straddles
+  // the edge. All live in locals, not WordScan, because no block ever straddles
+  // a words() call -- the epilogue is always scalar.
+  u32 carryS = 0, carryN = 0;
+  u32 carryLead2 = 0, carryLead3a = 0, carryLead3b = 0;
+  while ( i + 34 <= len && i + 32 <= ownedEnd ) {
     const Blk v = loadBlk( base + i );
     u32 sMask = asciiSep( v );
     u32 pMask = asciiPrint( v );
     const u32 high = highMask( v );
     if ( high != 0 ) {
       // The block vectorizes only if every high byte is part of a well-formed
-      // 2-byte sequence (lead C2..DF + exactly one continuation, including a
-      // pair straddling the block edge) whose lead is clean per kCandLead.
+      // 2- or 3-byte sequence (lead + exact number of continuations, including
+      // a window straddling the block edge) whose lead (resp. (lead, cont1)
+      // sub-row) is clean per kCandLead / kCandLead3.
       const u32 lead2 = rangeMask( v, 0xC2, 0xDF );
+      const u32 lead3 = rangeMask( v, 0xE0, 0xEF );
       const u32 cont = rangeMask( v, 0x80, 0xBF );
-      bool clean =
-          high == ( lead2 | cont ) && cont == ( ( lead2 << 1 ) | carryLead );
-      if ( clean && ( lead2 >> 31 ) != 0 && ( base[i + 32] & 0xC0 ) != 0x80 )
-        clean = false;  // lead at bit 31 with no continuation after the block
+      // Carry contributions to the "expected continuation positions" of THIS
+      // block. carryLead3b forces both bit 0 (cont1) and bit 1 (cont2).
+      const u32 carryC1 = carryLead2 | carryLead3a | carryLead3b;  // -> bit 0
+      const u32 carryC2 = carryLead3b << 1;                        // -> bit 1
+      bool clean = high == ( lead2 | lead3 | cont ) &&
+                   cont == ( ( lead2 << 1 ) | ( lead3 << 1 ) | ( lead3 << 2 ) |
+                             carryC1 | carryC2 );
+      // Edge-byte validation: any lead whose continuations spill past bit 31
+      // must see actual continuation bytes in the lookahead.
+      if ( clean ) {
+        const bool needB32 = ( lead2 >> 31 ) != 0 ||
+                             ( ( lead3 >> 30 ) & 1u ) != 0 ||
+                             ( lead3 >> 31 ) != 0;
+        const bool needB33 = ( lead3 >> 31 ) != 0;
+        if ( needB32 && ( base[i + 32] & 0xC0 ) != 0x80 ) clean = false;
+        if ( clean && needB33 && ( base[i + 33] & 0xC0 ) != 0x80 )
+          clean = false;
+      }
       if ( clean ) {
         u32 leads = lead2;
         while ( leads != 0 ) {
@@ -156,13 +206,16 @@ void words(
           }
         }
       }
+      if ( clean && lead3 != 0 && lead3SubrowDirty( base + i, lead3 ) )
+        clean = false;
       if ( !clean ) {
         // Scalar-classify just this block; it consumes whole code points, so
         // resume at the first unconsumed byte with no pending carries.
         i = scalarUtf8(
             base, len, i, std::min( i + 32, ownedEnd ), s, m.nbspace
         );
-        carryS = carryN = carryLead = 0;
+        carryS = carryN = 0;
+        carryLead2 = carryLead3a = carryLead3b = 0;
         continue;
       }
 
@@ -182,9 +235,12 @@ void words(
       pMask &= ~( sSm | nSm );
       carryS = s2 >> 31;
       carryN = n2 >> 31;
-      carryLead = lead2 >> 31;
+      carryLead2 = lead2 >> 31;
+      carryLead3a = ( lead3 >> 30 ) & 1u;
+      carryLead3b = lead3 >> 31;
     } else {
-      carryS = carryN = carryLead = 0;
+      carryS = carryN = 0;
+      carryLead2 = carryLead3a = carryLead3b = 0;
     }
     stepMasks( sMask, pMask, 32, s );
     i += 32;
