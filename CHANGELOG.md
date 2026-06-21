@@ -4,6 +4,37 @@ Notable, user-visible changes to `qwc`. Format follows
 [Keep a Changelog](https://keepachangelog.com); the changelog is hand-curated,
 not generated from commit messages.
 
+## [unreleased]
+
+### Performance
+
+- The AVX2 and NEON word-counting kernels now vectorize clean 3-byte
+  UTF-8 sub-rows in-block instead of punting them to a per-byte scalar
+  fallback. The largest win lands on CJK text (Hiragana, Katakana, Han
+  ideographs, Hangul, Devanagari, ...): on a 256 MiB short-line CJK
+  corpus under `LC_ALL=C.UTF-8`, `qwc -w` drops from 219.8 ms (v0.2.1)
+  to 73.6 ms — **2.99× wall time**, 69% fewer cycles per byte. The
+  same mechanism delivers a smaller but visible gain on mixed-script
+  realistic-text workloads where a fraction of the input is multibyte:
+  every non-CJK C.UTF-8 `-w` cell in the bench matrix lands at
+  1.32–1.35× vs v0.2.1 (big, long, mixed, short, single-line all
+  consistent). 4-byte sequences (`F0..F4` lead bytes — emoji,
+  supplementary plane) still take the scalar path. C-locale cells,
+  ASCII-only input, and every flag bundle other than `-w` /
+  default-`-lwc` / `-l -w` are unchanged within ±2%. See
+  `benchmarks/README.md` Finding 13.
+
+  Mechanism, for the curious: the kernel's existing "is this block
+  cleanly classifiable in-vector?" check — previously a per-lead-byte
+  cleanness table that only admitted 2-byte sub-rows — now also
+  consults a per-(lead, cont1) table that admits 3-byte sub-rows whose
+  Unicode classification is locally unambiguous (the 1024-byte
+  `kCandLead3` table excludes overlong encodings, surrogate-lead
+  ranges, and code points around the ideographic space whose
+  printability flips inside a single E-prefixed range). The dirty path
+  is bit-identical to v0.2.1's scalar walk, so counts agree byte-for-
+  byte with GNU `wc` on every conformance cell as before.
+
 ## [0.2.1] - 2026-06-20
 
 ### Performance
