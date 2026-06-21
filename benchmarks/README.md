@@ -1225,6 +1225,153 @@ that `perf annotate` can't answer. Rung 2 (`toplev.py` TMA setup,
 separate branch) is the next escalation when the per-instruction view
 runs out of explanatory power.
 
+## Finding 13 — 3-byte UTF-8 vectorization in the AVX2 words kernel
+
+Closes the open question Finding 12 framed: a `kCandLead3[1024]`
+two-level (lead, cont1) cleanness table now gates direct in-vector
+classification of clean 3-byte sub-rows, in addition to the existing
+clean 2-byte rows. 4-byte sequences still punt. The change is
+bit-identical to scalar on all input; the win is path-switching for
+CJK / Hangul / Devanagari blocks (plus an incidental
+inlining-heuristic recovery on every other block — see "Layout-stabilizer"
+below).
+
+**Spec:** `qwc-companion/superpowers/specs/2026-06-20-3byte-utf8-avx2-words-design.md`.
+**Plan:** `qwc-companion/superpowers/plans/2026-06-20-3byte-utf8-avx2-words.md`.
+**Branch:** `three-byte-extension` (AVX2 only; NEON port is the
+release-parity blocker, flagged in `qwc-companion/TODO.md`).
+
+### Headline
+
+`cjk-short.txt -w`, `LC_ALL=C.UTF-8`, `qwc-perf` cycles event:
+
+| Quantity                                | Finding 12 | Finding 13 |    Δ |
+|-----------------------------------------|-----------:|-----------:|-----:|
+| Total cycles                            |      3.56B |      1.11B |  −69% |
+| Cycles / byte                           |      13.30 |       4.12 |  −69% |
+| `words` symbol % of cycles              |     96.60% |     47.84% | −49pp |
+| `lead3SubrowDirty` % (new helper)       |          — |     41.73% |    — |
+| `qwcIswprint` bitmap load (offset hot)  |     11.19% |      <1%   |  gone |
+
+The CJK win predicted by Finding 12's mixed/CJK gap (~2.7× upper bound)
+is comfortably exceeded. Wall-clock on the bench harness (`scripts/bench/cjk-short.sh`,
+`prep.sh apply` applied): 219.5 ms → 70.6 ms (**3.11× wall speedup**).
+
+### Per-instruction shift
+
+The Finding 12 hotspot was `movzbl (%rdx,%r10,1),%edx` at offset `0x6886`
+inside `words` — the second-level bitmap byte load in `qwcIswprint`
+(11.19% of cycles). That instruction's call chain (`scalarUtf8` →
+`classifyUtf8` → `qwcIswprint`) no longer fires per byte on clean
+3-byte sub-rows; the AVX2 path classifies the whole 32-byte block
+directly. `qwcIswprint` falls below the 1% reporting threshold.
+
+The new top-of-list is the `kCandLead3` cell test inside the extracted
+walker:
+
+| Symbol               | Top instruction                       | Share (of fn) | Share (of total) |
+|----------------------|---------------------------------------|--------------:|-----------------:|
+| `lead3SubrowDirty`   | `cmpb $0x0,(%rcx,%rax,1)` at `0x2244` |        33.76% |           14.09% |
+| `words` (vector body)| `vmovdqu (%rdx),%ymm1` (block load)   |         ~3.5% |            ~1.7% |
+
+The shift is what Finding 12 predicted: the kernel still has to consult
+a per-codepoint table, but it does so once per LEAD (≤4 leads per
+32-byte block on CJK content) instead of once per BYTE through
+`qwcIswprint`'s two-level bitmap.
+
+### No-regression matrix (160 cells)
+
+Sweep run with `scripts/bench/sweep.sh` (no `prep.sh apply`; the
+delta is large enough to survive desktop noise). Each cell is
+qwc / v0.2.1 ratio (>1.0 = qwc faster):
+
+| Corpus         | C / -w | C.UTF-8 / -w | C / default | C.UTF-8 / default |
+|----------------|-------:|-------------:|------------:|------------------:|
+| big            |  1.05× |        1.34× |       1.06× |             1.33× |
+| long           |  1.05× |        1.34× |       1.04× |             1.35× |
+| many           |  1.06× |        1.36× |       1.07× |             1.33× |
+| mixed          |  1.04× |        1.35× |       1.04× |             1.34× |
+| short          |  1.07× |        1.34× |       1.05× |             1.33× |
+| single-line    |  1.05× |        1.36× |       1.05× |             1.34× |
+| cjk-short      |  1.04× |    **3.02×** |       1.04× |         **2.97×** |
+| cyrillic-short |  1.03× |        1.06× |       1.02× |             1.06× |
+
+All `-l` / `-c` / `-m` / `-L` / `-L -m` cells (160 total minus the
+words-touching ones) sit at 1.00× ± noise. The non-CJK 1.32–1.36× wins
+on C.UTF-8 are not free lunches — those corpora have 8% multibyte
+fraction in the `mixed` UTF-8 class, so a meaningful slice of their
+blocks have 3-byte leads that the new path certifies clean instead of
+punting. cyrillic-short is the control: 100% 2-byte Cyrillic, no
+3-byte content for the new path to vectorize, so its win (1.06× on
+C.UTF-8 `-w`) is purely the layout/inlining recovery described below —
+useful as evidence that the layout fix is not corpus-specific. CJK is
+the headline; the realistic-text band is well above the no-op floor.
+
+### Layout-stabilizer: a finding inside the finding
+
+The first cut inlined the lead3 walk directly into `words()`. It
+passed unit tests, matched conformance, and posted the CJK win — but
+the no-regression matrix came back with a uniform ~4% slowdown on
+every C-locale `-w` cell of the sweep. `ab.sh -r 10` on `big -w`
+confirmed: **identical executed-instruction count** (868.5M vs 868.4M
+between branch and v0.2.1), with the 4% gap entirely in cycles. The
+regression was binary layout, not algorithm — `words()` had grown
+from 1051 to 1140 instructions (+8.5%), which shifted the C-locale
+exit branch from `0x7010` to `0x71c0` and perturbed alignment / icache
+for the unrelated C-locale loop.
+
+Extracting the walk to a `static [[gnu::noinline, gnu::cold]]` helper
+flipped the C-locale regression to a **4.2% win** (cycles 669M → 621M;
+wall 34.1ms → 31.0ms on the same `big -w` ab). Two effects compounded:
+
+1. **Layout.** `words()` shrank to 1113 instructions; `lead3SubrowDirty`
+   (18 instructions) landed in `.text.unlikely` (`.cold` partition),
+   off the hot icache path.
+2. **Inlining heuristic.** `[[gnu::cold]]` dropped the helper's size
+   from GCC's whole-function inliner estimate for `words()`. That
+   changed inlining decisions in unrelated branches of `words()` —
+   notably the C-locale block — and saved roughly one instruction per
+   32-byte iteration. The 256 MiB `big -w` run executed **9M fewer
+   instructions** (868.5M → 859.4M) on a path that never calls the
+   helper.
+
+The CJK win was preserved (~3.15× on `ab.sh`); the per-block function
+call into `lead3SubrowDirty` is invisible next to the `kCandLead3`
+cache probes inside. Net trade: −62 inst growth in `words()` (vs +89
+inlined), one cold-partitioned 18-inst helper, and a uniform recovery
+across the matrix. Diagnosis workflow captured in `qwc-companion/CLAUDE.md`
+("Diagnosing small regressions") for the next time `sweep.sh` shows a
+sub-5% regression on a cell that doesn't exercise the changed path.
+
+### NEON port status
+
+Not started. The mechanism is ISA-symmetric — the `kCandLead3` table
+is generated, locale-invariant, and orthogonal to the vector primitives;
+the NEON kernel needs the same lead3 mask, edge-byte check, carry
+widening, and noinline+cold helper-extraction. Flagged in
+`qwc-companion/TODO.md` as a release-parity blocker for the next
+release that ships either ISA: shipping AVX2-only would put Apple
+Silicon users a meaningful generation behind on CJK throughput.
+
+### Follow-ons enabled or invalidated
+
+- **Pre-AVX2 short-circuit.** Finding 12 framed the kernel's open
+  expansions against the 13.30 cy/B baseline. That baseline is dead;
+  the new floor on CJK is 4.12 cy/B, and any further work in this lane
+  (4-byte vectorization, emoji corpus, lookup-table densification)
+  re-baselines against this Finding.
+- **4-byte path.** Still scalar. The cost calculus has shifted: a
+  4-byte AVX2 extension would need its own carry-quad and a (lead, cont1,
+  cont2) cleanness table — and the corpora that exercise it (heavy
+  emoji, supplementary planes) are rarer in real `wc` workloads. The
+  open question becomes how much realistic-text speedup is left to
+  claw back vs the engineering cost. The Finding 12 → Finding 13 path
+  was viable because CJK is common; emoji-only stress is the borderline
+  case and TODO carries it as deferred.
+- **`qwcIswprint` table reshape.** With the bitmap byte-load no longer
+  hot, the prior "dense bitmap is too big" line item drops in priority.
+  TODO accordingly.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers
