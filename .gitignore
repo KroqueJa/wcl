@@ -23,6 +23,7 @@ thirdparty
 
 # Agentic helper configs
 CLAUDE.md
+.claude
 
 # Logs
 logs/**
