@@ -9,14 +9,20 @@
 #include "words.h"
 #include "words_kernel.h"
 
-// NEON unified word counter -- the AArch64 counterpart of words_avx2.cpp, and
-// a faithful port of it. Per 32-byte block it builds two 32-bit bitmasks -- S
-// (separator bytes) and P (printable bytes) -- then advances the shared run
-// state machine over the masks with ctz hops (see words_kernel.h). A NEON
-// register is only 16 bytes wide, so each block is a pair of uint8x16_t and a
-// movemask helper compacts the two halves into the 32-bit mask the kernel
-// expects; that lets stepMasks / scalarUtf8 / the carry logic be reused
-// verbatim.
+// NEON unified word counter -- the AArch64 counterpart of words_avx2.cpp.
+// Builds per-byte S (separator) and P (printable) masks and advances the shared
+// run state machine over them (see words_kernel.h); scalarUtf8 and the carry
+// logic are reused either way.
+//
+// NEON has no native movemask, so it is emulated, and there are two builds
+// selected by QWC_NEON_NIBBLE (CMake; default ON):
+//   ON  (default): the vshrn "shift-narrow" trick over 16-byte blocks -> u64
+//     nibble masks (4 bits per byte), stepped by the NEON-local
+//     stepMasksNibble. No horizontal reduction; faster on the common UTF-8 and
+//     C word paths.
+//   OFF (fallback): 32-byte blocks (two uint8x16_t) compacted to 32-bit bit
+//     masks via vaddv, stepped by the shared stepMasks. The A/B baseline for
+//     the open dense-2-byte regression (qwc-companion Finding 15).
 //
 // C mode: S = ASCII whitespace, P = 0x21..0x7E, every full block vectorizes.
 // UTF-8 mode vectorizes exactly the content it can classify bit-for-bit like

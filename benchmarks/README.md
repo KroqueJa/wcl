@@ -1610,6 +1610,74 @@ out-of-band questions. Rung 3 (`likwid` markers + `llvm-mca`,
 separate branch in `TODO.md`'s `## Next`) is the escalation when
 TMA's whole-binary view runs out of explanatory power.
 
+## Finding 15 — NEON words movemask via the `vshrn` nibble trick (shipped, dense-2-byte regression)
+
+NEON has no native movemask. The words kernel built its 32-bit S/P bit
+masks by `AND`-ing each lane with a per-lane power of two and summing
+the groups — **4× `vaddv_u8` per 32-byte block**, a cross-lane
+horizontal reduction with multi-cycle latency. The `vshrn` shift-narrow
+"nibble" trick replaces it: `vshrn_n_u16(reinterpret_u16(cmp), 4)` +
+`vget_lane_u64` yields a `u64` where input byte *i* lands in nibble *i*
+(`0xF`/`0x0`) — one shift-narrow + one GPR move, **no reduction**. The
+mask is now 4-bits-per-byte, so the state machine and the UTF-8
+clean-check arithmetic move to nibble stride (`<<1`→`<<4`, `>>31`→`>>60`,
+`popcount>>2`, `ctz>>2`) in a NEON-local `stepMasksNibble` — the shared
+bit-per-byte `stepMasks` is left untouched so the AVX2 kernel can't be
+perturbed. One `uint8x16_t` per block (16 bytes → one `u64`).
+
+### Headline (20-run wall-clock, ON vs the `vaddv` baseline)
+
+| corpus / locale | `-w` | what it is |
+|---|---|---|
+| mixed, short, big — `C.UTF-8` | **1.20×** | common UTF-8: ASCII-dominant + multibyte |
+| all corpora — `C` | **1.04×** | the common C-locale word count |
+| cjk-short — `C.UTF-8` | 1.00× | dense 3-byte: bottlenecked on `kCandLead3`, not movemask |
+| **cyrillic-short — `C.UTF-8`** | **0.87×** | dense 2-byte: **regression** |
+
+The UTF-8 win is large because that path issues ~3–9 movemasks per
+block (vs C-mode's 2), so the `vshrn` saving is amplified. `-l`, `-L`
+and `-c` are unchanged (their kernels don't move); binary size is
+unchanged (91 KB, same as the `vaddv` build — the dead `vaddv` helpers
+are `#if !QWC_NEON_NIBBLE`-guarded out).
+
+### The regression, and why N32 can't fix it
+
+16-byte blocks double the per-block fixed cost — carries, the
+clean/cont mask comparison, edge-byte validation — relative to the old
+32-byte blocks. On ASCII-dominant input the cheap `high == 0` fast path
+skips almost all of it and the movemask saving dominates; on **dense
+2-byte** input (every block runs the full machinery) the doubled
+overhead outweighs the saving, hence −13% on the all-Cyrillic corpus.
+
+The obvious fix — keep 32-byte blocks (restoring edge frequency) but
+build the masks with `vshrn` into a 128-bit nibble mask — was
+implemented and **falsified**: `__uint128_t` arithmetic on AArch64
+(the `u128` state machine, `popcount128`/`ctz128`, the 128-bit
+clean-check) costs *more* than the movemask saves. "N32" regressed
+**C `-w` to 0.82×** and **cyrillic to 0.58×** while halving the UTF-8
+win to ~1.08×. So the nibble win exists only while the masks stay in
+native `u64` (16-byte blocks), and the dense-2-byte regression is
+intrinsic to that form. The dense-2-byte recovery is left as an open
+follow-on (`TODO.md` `## Next`).
+
+### Why it shipped anyway
+
+Even regressed, qwc on the all-Cyrillic corpus is **~12× `uu-wc`**
+(39.7 ms vs 480.7 ms `-w`) and ~70× GNU `wc`; the regression moves us
+from ~14× to ~12× ahead of the real competitor, not into "slow"
+territory. Shipped **default ON**; `-DQWC_NEON_NIBBLE=OFF` restores the
+`vaddv` path (the A/B baseline for the follow-on). **AVX2 has no
+counterpart** — `_mm256_movemask_epi8` is already one instruction — so
+this is NEON-only and **not a release-parity blocker**.
+
+### Validation
+
+`qwc_tests` 215/215 (+1 env-skip), `scripts/check-format.sh` clean, and
+conformance `0 failed` under both `LC_ALL=C` and `C.UTF-8`, including an
+89,928-case chunk-boundary-stress fuzz (the chunk stress is what
+exercises the nibble carry/edge logic). Spec + plan:
+`qwc-companion/superpowers/{specs,plans}/2026-06-21-16byte-neon-words-nibble*`.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

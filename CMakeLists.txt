@@ -41,11 +41,13 @@ option( QWC_TSAN "Build with ThreadSanitizer"          OFF )
 # active (LTO + ASan/UBSan/TSan can confuse the sanitizer instrumentation).
 option( QWC_LTO "Enable IPO/LTO on Release builds" ON )
 
-# Experimental (NEON only): replace the words movemask's vaddv horizontal
-# reduction with the vshrn nibble trick over 16-byte blocks. Off by default; ON
-# must be benched against OFF. See
-# superpowers/specs/2026-06-21-16byte-neon-words-nibble-design.md (companion).
-option( QWC_NEON_NIBBLE "Experimental: vshrn nibble-mask movemask in the NEON words kernel" OFF )
+# NEON-only: the words movemask uses the vshrn nibble trick (16-byte blocks,
+# u64 nibble masks) instead of the vaddv horizontal-reduction construction.
+# Default ON -- it wins ~20% on the common UTF-8 word-count path and ~4% on the
+# C path, at the cost of a regression on dense 2-byte scripts (see Finding 15).
+# Build with -DQWC_NEON_NIBBLE=OFF for the vaddv fallback (the A/B baseline for
+# the open dense-2-byte investigation). No effect on the AVX2 build.
+option( QWC_NEON_NIBBLE "NEON words: vshrn nibble-mask movemask (OFF = vaddv fallback)" ON )
 
 # Output-name suffix so multiple profiles can coexist without clobbering ./qwc.
 # Leave empty for the normal benchmark binary (-> ./qwc). For a sweep, set e.g.

@@ -4,6 +4,22 @@ Notable, user-visible changes to `qwc`. Format follows
 [Keep a Changelog](https://keepachangelog.com); the changelog is hand-curated,
 not generated from commit messages.
 
+## [Unreleased]
+
+### Performance
+
+- NEON (Apple Silicon) word counting (`-w`, `-l -w`, default `-lwc`) is
+  faster. The kernel now emulates the missing NEON movemask with the `vshrn`
+  shift-narrow "nibble" trick over 16-byte blocks instead of a `vaddv`
+  horizontal reduction. On 256 MiB corpora under `LC_ALL=C.UTF-8`,
+  ASCII-dominant and clean-multibyte text (mixed / short / general-shape)
+  speeds up ~**1.20×**; the C locale gains ~**1.04×**; dense CJK (3-byte) is
+  unchanged. Trade-off: dense 2-byte scripts (an adversarial all-Cyrillic
+  corpus) regress ~13% versus the previous NEON build — still ~12× faster
+  than `uu-wc` — and are tracked for a follow-up. The `vaddv` path remains
+  available via `-DQWC_NEON_NIBBLE=OFF`. x86/AVX2 builds are unaffected. See
+  `benchmarks/README.md` Finding 15.
+
 ## [0.3.0] - 2026-06-21
 
 ### Performance
