@@ -1914,6 +1914,232 @@ attribution).
   layer Rung 2 sits above; both layers ship side-by-side, separate
   questions.
 
+## Finding 17 — branchless `WordScan` state update: TMA rescue works, wall-clock regresses (null)
+
+Measured **2026-06-22** on the i7-8700 (AVX2, 12 logical CPUs, GCC 16.1.1).
+`./qwc-perf` RelWithDebInfo build for Rungs 1–2; the standard `sweep.sh`
+candidate build (LTO, `-march=x86-64-v3`) for Rung 3. All TMA cells under
+`LC_ALL=C`. Spec + plan:
+`qwc-companion/superpowers/{specs,plans}/2026-06-22-branchless-wordscan-state-update*`.
+
+### TL;DR
+
+- **Rung 2 confirmed the rescue mechanism.** Bad_Speculation dropped
+  **9.0–10.3pp** across all four cells (`short`/`long` × `-l -w`/`-w`
+  under `LC_ALL=C`). The drop was the same on `-l -w` and `-w`-only,
+  refining Finding 16's "geometry-invariant on `-l -w`" reading to
+  **`-w`-specific** — the unpredictable branches are in the run state
+  machine, fired by every word-byte transition, independent of `-l`.
+- **Rung 3 falsified the wall-clock prediction.** The sweep matrix
+  regressed: **+5–7%** on C-locale `-w` cells, **+18–23%** on C.UTF-8
+  `-w` cells. The falsification floor (1.5%) was blown on every word-
+  counting cell, AVX2-fast-path included.
+- **Diagnostic:** retired instructions **+10% (C-locale)** to **+42%
+  (C.UTF-8)** despite branch-misses dropping **~20%** as predicted.
+  The branchless rewrite trades unpredictable branches for unconditional
+  stores; the stores retire more cost than the mispredict savings recover.
+- **Methodology lesson.** TMA's Bad_Speculation share is a *normalized
+  slot fraction*, not an absolute cost. A drop in BadSpec slot share
+  does not predict wall-clock if Retiring slot share rises in concert.
+  Future probes that gate on a TMA BadSpec signal should pair the
+  reading with an executed-instructions A/B from the start.
+- **Verdict: dropped.** Branch parked on `branchless-word-scan` for
+  archaeology; the change does not ship. Both `step()` and `stepMasks()`
+  fast-path rewrites move the regression in the same direction
+  (per-byte vs per-block stores, same mechanism), so no narrower
+  carve-out salvages the win.
+
+### Methodology
+
+Single AVX2 branch (`branchless-word-scan`) touching only
+`include/words_kernel.h` — both `step()` (the scalar / per-byte path)
+and the fast-path arm of `stepMasks()` (the SIMD per-block path)
+rewritten to straight-line bitop updates. The slow-path run-walker
+inside `stepMasks` deliberately not touched: barren-run policy is open,
+and rewriting the walker would harden semantics that may flip.
+Correctness verified by full `qwc_tests` green on both AVX2
+(`build-perf`) and scalar (`build-scalar`) builds plus the `--quick`
+conformance run against GNU `wc 9.4`.
+
+Three measurement rungs in order. Each gated the next.
+
+| Rung | Substrate | Cells |
+|---|---|---|
+| 1 | `perf-annotate.sh` (top-symbol report) | `mixed -l -w` `LC_ALL=C` |
+| 2 | `toplev.sh` (top-level TMA slot shares) | `{short, long}` × `{-l -w, -w}`, `LC_ALL=C`, ≥ 2 runs/cell |
+| 3 | `sweep.sh` (the standard 7-corpus × 10-flag × 2-locale matrix) | seven 256 MiB corpora, all flags, both locales |
+
+Per Finding 16's protocol: top-level slot reproducibility floor
+±3pp; a third run if the first two disagreed by more on
+Bad_Speculation. One such tie-breaker fired (long `-l -w` after-rewrite
+run 1 fell below toplev's display threshold for BadSpec, a multiplex
+attribution artifact; runs 2 and 3 agreed at 16.5–16.7%).
+
+### Rung 1 — top-symbol shape stable
+
+| | `words` (isra.0) | `rep_movs_alternative` | `count` |
+|---|---|---|---|
+| baseline | 79.97% | 10.20% | 3.94% |
+| after | 81.89% | 10.56% | 3.59% |
+
+`words` share crept up; with ~670 samples per single-run report the
+shape is reproducibility-noise indistinguishable from the baseline.
+Rung 1 alone could not have answered the wall-clock question.
+
+### Rung 2 — Bad_Speculation drops 9–10pp on every cell
+
+| Cell | Baseline avg | After avg | Δ |
+|---|---|---|---|
+| short `-l -w` | 25.2% | 16.1% | **−9.1pp** |
+| long `-l -w`  | 25.6% | 16.6% | **−9.0pp** |
+| short `-w`    | 26.7% | 16.4% | **−10.3pp** |
+| long `-w`     | 26.8% | 17.0% | **−9.8pp** |
+
+The displacement showed up as Frontend_Bound rising **~+10–13pp** in
+concert (e.g. long `-l -w` Frontend 17.4% → 31.1% across runs) —
+the saved BadSpec slots are still cycle cost, just reattributed once
+the speculation window closes. Retiring share rose **~+1–3pp**
+absolute (e.g. short `-l -w` Retiring 32.0% baseline → 33.4% after),
+small in proportional terms but, as Rung 3 shows, large enough in
+absolute slots to dominate the wall-clock outcome.
+
+This is the symmetric inverse of Finding 14's `-L` short/long contrast:
+there, Bad_Speculation cost was geometry-specific (only short, because
+short-line input shortens the loop trip distance and starves the
+predictor); here, Bad_Speculation cost is **flag-specific to `-w`** and
+fires equally on short and long, because the unpredictable branches are
+inside the run state machine that visits every byte regardless of line
+length.
+
+### Rung 3 — wall-clock regressed; floor blown
+
+Selected rows from the 7-corpus sweep matrix
+(`logs/branchless-wordscan/rung3-sweep.log`). Times in ms; "vs v0.3.0"
+shows the candidate / baseline time ratio.
+
+| Corpus | locale / flag | candidate | v0.3.0 | ratio |
+|---|---|---|---|---|
+| big.txt | C / `-w` | 32.3 | 30.7 | **1.05× slower** |
+| big.txt | C / `-l -w` | 33.3 | 31.6 | 1.05× slower |
+| big.txt | C.UTF-8 / `-w` | **48.7** | **39.9** | **1.22× slower** |
+| big.txt | C.UTF-8 / `-l -w` | 49.5 | 40.9 | 1.21× slower |
+| mixed | C / `-l -w` | 37.2 | 34.7 | 1.07× slower |
+| mixed | C.UTF-8 / `-w` | **54.1** | **44.1** | **1.23× slower** |
+| mixed | C.UTF-8 / `-l -w` | 55.2 | 45.4 | 1.22× slower |
+| long  | C / `-l -w` | 33.3 | 31.6 | 1.05× slower |
+| long  | C.UTF-8 / `-w` | 48.5 | 39.7 | 1.22× slower |
+| short | C / `-l -w` | 37.4 | 34.7 | 1.08× slower |
+| short | C.UTF-8 / `-w` | 54.2 | 44.7 | 1.21× slower |
+
+Every C-locale `-w` cell regressed 5–8%. Every C.UTF-8 `-w` cell
+regressed 18–23%. The falsification floor (1.5%) was the trigger;
+multiple cells exceeded it by an order of magnitude.
+
+### Diagnostic — retired-instruction blow-up explains the regression
+
+`perf stat -r 5` on the two cleanest regressors:
+
+| Cell | metric | candidate | v0.3.0 | Δ |
+|---|---|---|---|---|
+| `big -w` C.UTF-8 | instructions | 1.861G | 1.314G | **+42%** |
+| | branch-misses | 8.49M | 10.68M | −20% |
+| | cycles | 972M | 781M | +24% |
+| | time (s) | 0.0496 | 0.0403 | +23% |
+| `mixed -l -w` C | instructions | 969M | 878M | **+10%** |
+| | branch-misses | 6.29M | 7.96M | −21% |
+| | cycles | 665M | 633M | +5% |
+| | time (s) | 0.0335 | 0.0315 | +6% |
+
+Two clean signals:
+
+1. **Branch-misses fell ~20% on every cell**, confirming the rescue
+   mechanism — the per-byte branches in the run state machine WERE
+   unpredictable, and the branchless rewrite removed them as
+   predicted.
+2. **Retired instructions blew up.** The C-locale path takes
+   `stepMasks` fast-path almost exclusively (only the scalar epilogue
+   hits `step`), so +10% reflects the fast-path rewrite alone. The
+   C.UTF-8 path sends every block with a byte ≥ 0x80 through
+   `scalarUtf8` → `step` per byte; +42% reflects step's rewrite cost
+   amplified by the punt path. The extra 32pp is the per-byte `step`
+   cost.
+
+The static disassembly tells the same story: `words(...)` grew from
+**1125 to 1364 instruction lines** (+21% function size). The fast-path
+arm picked up the carry-correction's `xor` + `and` + `sub`, three
+movzbl loads of state fields that the conditional original could keep
+in flags, and the `if (sMask != 0)` collapse — net several extra
+instructions per 32-byte block. On a 256 MiB workload at 8M blocks, even
+~10 extra instructions per block is 80M extra retired instructions,
+which is exactly the C-locale regression scale.
+
+`step()` is the bigger offender: the branchless form writes **all**
+state fields unconditionally — `s.inWord`, `s.runHasPrintable`,
+`s.sawSeparator` — where the conditional original was effectively a
+NO-OP on the common path (a non-Sep byte after a non-Sep byte hits
+`s.inWord = true` already-true, skipped by the predictor as a
+well-predicted-out branch with no store). Turning that NO-OP into a
+real store retires cost on every byte; on the punt path that means
+millions of bytes paying for what was almost free before.
+
+### Why TMA's BadSpec rescue didn't predict wall-clock
+
+TMA's slot-share categories — Bad_Speculation, Frontend_Bound,
+Backend_Bound, Retiring — sum to 100%. The arithmetic of slot-share
+shifts:
+
+- BadSpec dropped ~9pp (the rescue).
+- Frontend_Bound rose ~+10–13pp (mispredict cost reattributed to fetch
+  resteers once speculation closed).
+- Retiring rose ~+1–3pp absolute. **Small as a slot-share delta —
+  large as absolute slot count when the workload retires hundreds of
+  millions of additional unconditional stores.**
+
+The slot-share view normalizes away the issue: a 26% → 16% BadSpec
+drop with a 32% → 35% Retiring rise looks like a clean win at the
+top-level reading. The absolute view (executed instructions × IPC)
+inverts it.
+
+Finding 16's redux protocol was correct for *naming* the bottleneck
+(it correctly identified BadSpec as the dominant slot share in `-l -w`
+and `-w`) but insufficient for *predicting the wall-clock impact of a
+rescue* (because the rescue's instruction-count cost lives in
+Retiring, which the redux didn't gate on). The methodology refinement
+is: pair a TMA BadSpec rescue probe with a Rung-1.5 `perf stat -r N`
+A/B that includes the executed-instructions delta, run *before* the
+sweep matrix — that catches +10% / +42% instruction inflation in a
+cheaper, cleaner measurement than the 60-cell matrix and would have
+preempted Rung 3 here.
+
+### Verdict
+
+**Dropped.** The `branchless-word-scan` branch stays parked for
+archaeology; the production tree is untouched (the rewrite was reverted
+before the diff committed, only this Finding 17 lands on `main`). The
+TODO entry "Branchless state-machine update for `WordScan` flags"
+moves from `qwc-companion/TODO.md` to `qwc-companion/NOT-DOING.md`
+with the falsification recorded.
+
+No narrower carve-out is on the table: `step()`'s per-byte stores and
+`stepMasks()` fast-path's per-block stores both regress wall-clock
+through the same mechanism. The slow-path run-walker stays scoped
+out — its rewrite would face the same store-cost wager AND depends on
+unsettled barren-run semantics, two blockers stacked. The remaining
+~16–17% BadSpec on `-w` is now classified as a real cycle cost the
+current shape cannot recover without a different algorithm
+(packed `WordScan` fields reducing the store width? merging fields so
+fewer addresses are touched per byte?), which is a separate design
+question and a different ticket.
+
+### Cross-references
+
+- **Finding 14** — TMA on `-L` long lines; the workflow Finding 17 reuses.
+- **Finding 16** — TMA redux that motivated this rescue; the BadSpec
+  attribution it produced is confirmed, the wall-clock rescue
+  hypothesis it implied is falsified here.
+- **Finding 8** — the original `-l -w` fusion null. Stays dropped;
+  Finding 17 didn't open a fusion rescue.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers
