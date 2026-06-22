@@ -45,6 +45,13 @@ target_link_libraries( qwc_tests PRIVATE GTest::gtest_main )
 # cli_test.cpp drives the real binary; hand it the resolved path and make sure
 # the binary is built first.
 target_compile_definitions( qwc_tests PRIVATE QWC_BINARY="$<TARGET_FILE:qwc>" )
+
+# Mirror the words-kernel experiment switch onto the test target so the nibble
+# path (src/words_neon.cpp) is what gets unit-tested when it is enabled.
+if( QWC_NEON_NIBBLE )
+  target_compile_definitions( qwc_tests PRIVATE QWC_NEON_NIBBLE=1 )
+endif()
+
 add_dependencies( qwc_tests qwc )
 
 include( GoogleTest )

@@ -124,6 +124,36 @@ TEST( WordsC, PrintabilityRule )
 }
 
 // ---------------------------------------------------------------------------
+// C-mode 16-byte block geometry. These craft inputs that exercise the
+// boundaries the nibble kernel introduces (block-edge runs, a separator at the
+// top nibble (byte 15), barren runs, carried-in runs). Correctness holds on
+// the baseline build too, so they pass with QWC_NEON_NIBBLE off or on.
+// ---------------------------------------------------------------------------
+TEST( WordsCNibble, BlockGeometryEdges )
+{
+  const std::string cases[] = {
+    std::string( 16, ' ' ),            // full separator block
+    std::string( 16, 'a' ),            // full word block (run open at edge)
+    std::string( 16, 'a' ) + " b",     // run crosses the 16-byte edge
+    std::string( 15, 'a' ) + " b",     // separator exactly at byte 15
+    std::string( 17, 'a' ) + " ",      // run ends one byte into block 1
+    "ab cd ef gh ij kl mn op",         // many words spanning blocks
+    std::string( "\x01\x01\x01", 3 ),  // barren run only -> 0 words
+    std::string( "a\x01\x01 b", 5 ),   // run with Other + printable
+    std::string( 16, 'a' ) + std::string( 3, '\x01' ) +
+        " z",                                    // word|barren|word
+    "   leading spaces then words here too   ",  // leading + trailing runs
+  };
+  const std::size_t chunks[] = { 1, 7, 16, 17, 31, 33 };
+  for ( const auto& s: cases ) {
+    EXPECT_EQ( wordsStr( s ), refWords( s ) ) << "one-shot: [" << s << "]";
+    for ( const std::size_t chunk: chunks )
+      EXPECT_EQ( wordsChunked( s, chunk ), refWords( s ) )
+          << "chunk=" << chunk << " [" << s << "]";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // UTF-8 parameterization. Non-ASCII characters appear as escaped UTF-8 byte
 // sequences so the test data is visible and editor-proof.
 // ---------------------------------------------------------------------------
@@ -341,6 +371,53 @@ TEST( WordsUtf8, IdeographicSpacePuntsToScalar )
   const std::string s =
       std::string( 40, 'a' ) + "\xE3\x80\x80word" + std::string( 40, 'b' );
   EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 16-byte block geometry (exercises the nibble kernel's UTF-8 path:
+// clean 2-/3-byte sequences and punts straddling the 16-byte edge, hitting
+// carryLead2/3a/3b, carryS, carryN, and the i+16/i+17 edge-byte validation).
+// Correctness holds on the baseline build too.
+// ---------------------------------------------------------------------------
+TEST( WordsUtf8Nibble, BlockEdgeSequences )
+{
+  const std::string seqs[] = {
+    "\xC3\xA9",          // U+00E9 e-acute (clean 2-byte)
+    "\xD0\xB0",          // U+0430 Cyrillic a (clean 2-byte)
+    "\xE4\xB8\x80",      // U+4E00 CJK (clean 3-byte)
+    "\xC2\xA0",          // U+00A0 NBSP (2-byte separator -> carryS)
+    "\xC2\x80",          // U+0080 C1 control (non-printable -> carryN)
+    "\xF0\x9F\x98\x80",  // U+1F600 emoji (4-byte -> punts)
+    "\xE3\x80\x80",      // U+3000 ideographic space (dirty 3-byte -> punts)
+  };
+  const std::size_t chunks[] = { 1, 13, 16, 17, 32 };
+  for ( const auto& seq: seqs )
+    for ( std::size_t pre = 10; pre <= 18; ++pre ) {
+      const std::string s = std::string( pre, 'a' ) + seq + "bc def";
+      EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) )
+          << "pre=" << pre << " one-shot";
+      for ( const std::size_t chunk: chunks )
+        EXPECT_EQ( wordsChunked( s, chunk, kUtf8 ), refWords( s, true ) )
+            << "pre=" << pre << " chunk=" << chunk;
+    }
+}
+
+TEST( WordsUtf8Nibble, PureMultibyteBlocks )
+{
+  std::string cjk, cyr;
+  for ( int k = 0; k < 40; ++k ) {
+    cjk += "\xE4\xB8\x80";  // U+4E00
+    cyr += "\xD0\xB0";      // U+0430
+  }
+  const std::string cases[] = { cjk, cyr, cjk + " " + cyr,
+                                "word " + cjk + " word " + cyr + " end" };
+  const std::size_t chunks[] = { 1, 16, 17, 48 };
+  for ( const auto& s: cases ) {
+    EXPECT_EQ( wordsStr( s, kUtf8 ), refWords( s, true ) );
+    for ( const std::size_t chunk: chunks )
+      EXPECT_EQ( wordsChunked( s, chunk, kUtf8 ), refWords( s, true ) )
+          << "chunk=" << chunk;
+  }
 }
 
 // ---------------------------------------------------------------------------
