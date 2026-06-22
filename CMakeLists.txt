@@ -240,9 +240,6 @@ function( qwc_configure target )
       CXX_CLANG_TIDY "${QWC_CLANG_TIDY_EXE};--warnings-as-errors=*" )
   endif()
 
-  # Emit into the project root so benchmark scripts keep finding the binary
-  # regardless of which build tree the profile uses.
-  set_target_properties( ${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR} )
 endfunction()
 
 # ---------------------------------------------------------------------------

@@ -47,9 +47,12 @@ def find_qwc() -> str:
         if not os.path.isfile(env):
             raise SystemExit(f"QWC_BIN={env!r} is not a file")
         return os.path.abspath(env)
-    candidate = os.path.join(REPO_ROOT, "qwc")
-    if os.path.isfile(candidate):
-        return candidate
+    for candidate in (
+        os.path.join(REPO_ROOT, "qwc"),
+        os.path.join(REPO_ROOT, "build", "qwc"),
+    ):
+        if os.path.isfile(candidate):
+            return candidate
     found = shutil.which("qwc")
     if found:
         return found

@@ -73,8 +73,7 @@ jobs:
         run: |
           cmake -S . -B build-branch -DCMAKE_BUILD_TYPE=Release -DQWC_BUILD_TESTS=OFF
           cmake --build build-branch --target qwc
-          # qwc emits to the source-tree root (RUNTIME_OUTPUT_DIRECTORY); name it.
-          cp ./qwc ./qwc-branch
+          cp build-branch/qwc ./qwc-branch
 
       - name: Build main (Release)
         if: github.ref != 'refs/heads/main'
@@ -82,7 +81,7 @@ jobs:
           git worktree add /tmp/main-tree origin/main
           cmake -S /tmp/main-tree -B build-main -DCMAKE_BUILD_TYPE=Release -DQWC_BUILD_TESTS=OFF
           cmake --build build-main --target qwc
-          cp /tmp/main-tree/qwc ./qwc-main
+          cp build-main/qwc ./qwc-main
 
       # On main runs there is no "branch vs main" comparison to make, so the
       # baseline column is the latest published release binary instead. That

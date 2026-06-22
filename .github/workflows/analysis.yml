@@ -90,7 +90,7 @@ jobs:
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
       TSAN_OPTIONS: halt_on_error=1
       QWC_CONF_UTF8_LOCALE: C.UTF-8
-      QWC_BIN: ./qwc
+      QWC_BIN: ./build/qwc
     steps:
       - uses: actions/checkout@v4
         with:

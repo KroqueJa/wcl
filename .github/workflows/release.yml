@@ -75,12 +75,13 @@ jobs:
       # this grep fails, the version plumbing regressed -- abort the release.
       - name: Verify embedded version matches the tag
         run: |
-          ./qwc --version
-          ./qwc --version | grep -F "qwc ${GITHUB_REF_NAME}"
+          build/qwc --version
+          build/qwc --version | grep -F "qwc ${GITHUB_REF_NAME}"
 
       # tar (not a bare binary) so the executable bit survives the download.
+      # -C build keeps the archive flat: `qwc`, not `build/qwc`.
       - name: Package
-        run: tar -czf ${{ matrix.artifact }}.tar.gz qwc
+        run: tar -czf ${{ matrix.artifact }}.tar.gz -C build qwc
 
       - uses: actions/upload-artifact@v4
         with:

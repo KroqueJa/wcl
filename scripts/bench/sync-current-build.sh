@@ -24,9 +24,6 @@ if [ ! -f "$build_dir/build.ninja" ]; then
   cmake -G Ninja -S "$repo_root" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
 fi
 ninja -C "$build_dir" qwc
-# CMake's RUNTIME_OUTPUT_DIRECTORY is the source tree, so ninja writes the
-# binary straight to ./qwc -- no cp needed (see CMakeLists.txt around the
-# `set_target_properties( ... RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR} )`
-# line).
+cp "$build_dir/qwc" "$target"
 
 echo "sync-current-build: $target now $("$target" --version 2>/dev/null | awk '{print $2}')"

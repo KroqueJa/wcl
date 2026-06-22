@@ -38,7 +38,7 @@ git worktree add --detach "$worktree" "$latest_tag"
   cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
   ninja qwc
 )
-cp "$worktree/qwc" "$target"
+cp "$worktree/build/qwc" "$target"
 git worktree remove --force "$worktree"
 
 echo "sync-latest-release: $target now $latest_tag"
