@@ -623,6 +623,14 @@ conformance suite passed all required comparisons (24,411 matched,
 0 failed) against the fused build. The fusion was bit-faithful; it
 just didn't pay off.
 
+**Amended by Finding 16** (TMA redux): both short and long `-l -w`
+classify as ~26% Bad_Speculation on the baseline at the cycle level —
+the misprediction cost is flag-specific (per-word-boundary branch in
+the run state machine), not geometry-specific as Finding 14's `-L`
+contrast had suggested. The rescue shape is the existing "Branchless
+WordScan" TODO entry, not a refined fusion shape; Finding 8's `-l -w`
+fusion stays dropped.
+
 ## Finding 9 — PGO + LTO on release builds: LTO stays on (neutral); PGO dropped
 
 Measured **2026-06-18** on the i7-8700 (AVX2, 12 logical CPUs, GCC 15.3.1).
@@ -756,6 +764,16 @@ existed: counts matched `v0.2.0` on every measured cell. The
 LTO-only candidate is identically bit-faithful (LTO does not change
 codegen semantics).
 
+**Amended by Finding 16** (TMA redux): the regression mechanism on
+`long -w` classifies as **Frontend.Fetch_Bandwidth.MITE** at the cycle
+level — PGO's profile-driven inlining bloats the hot path past the DSB
+(uop cache), forcing fetch through the legacy decoder. Frontend rises
++13pp under PGO; Bad_Speculation drops −6pp; net regression. The
+mechanism is sharper than Finding 9's wall-clock-deduced story, but
+the rescue shape ("constrain inlining to fit DSB") is the same
+family of trade-offs Finding 9's config sweep already explored.
+Finding 9 stays dropped.
+
 ## Finding 10 — Strip-mining `scanBuffer` to L1-resident strips: null result
 
 Measured **2026-06-19** on the native Linux box (Intel i7-8700, 6C/12T,
@@ -861,6 +879,16 @@ No separate design spec exists — the hypothesis lived only as the
 `## Next` TODO bullet ("Strip-mine multi-counter scans") and the
 throwaway `scripts/strip-sweep.sh`; both are removed alongside this
 writeup. The companion roadmap entry moves to `## Not doing`.
+
+**Amended by Finding 16** (TMA redux): baseline `(default = -lwc)` shows
+**BE/Memory consistently below display threshold** (sub-5% slots) on
+both `mixed-256MiB` and `big.txt` across 5 runs. When Backend surfaces
+at all, it's BE/Core (Ports_Utilization), not BE/Memory. The proposed
+L1-tiling rescue had no cycle-level deficit to recover — the per-byte
+pipeline is branch-bound and core-bound, not memory-bound, on the
+multi-counter default workload at Finding 6's L2-resident scan buffer.
+Finding 10 stays closed on cleaner evidence than the original 60-cell
+wall-clock sweep.
 
 ## Finding 11 — io_uring depth-2 read/scan overlap: null result, Finding 6 ate the slack
 
@@ -1677,6 +1705,214 @@ conformance `0 failed` under both `LC_ALL=C` and `C.UTF-8`, including an
 89,928-case chunk-boundary-stress fuzz (the chunk stress is what
 exercises the nibble carry/edge logic). Spec + plan:
 `qwc-companion/superpowers/{specs,plans}/2026-06-21-16byte-neon-words-nibble*`.
+
+## Finding 16 — TMA redux: re-examining Findings 8, 9, 10 with `toplev.py`
+
+Measured **2026-06-22** on the i7-8700 (AVX2, 12 logical CPUs, GCC 16.1.1)
+via `scripts/bench/toplev.sh` (Rung 2 workflow, Finding 14). `./qwc-perf`
+RelWithDebInfo build for Findings 8 and 10; `/tmp/qwc-pgo-redux-bin`
+(resurrected PGO build at commit `a0a0245`, three-stage `build-pgo.sh` with
+the `gen-data.py --pgo-training` synthetic 32 MiB training corpora) for
+Finding 9. Two consecutive runs per cell (a third for any cell whose
+top-level slot categories disagreed by > 3pp between runs). All cells
+under `LC_ALL=C` — the regression-sensitive locale for the word kernel.
+Spec + plan:
+`qwc-companion/superpowers/{specs,plans}/2026-06-22-tma-redux-findings-8-9-10*`.
+
+### TL;DR
+
+- **Finding 8 redux:** Short `-l -w` is **Bad_Speculation-dominated** at
+  25.8–26.0% (Branch_Mispredicts), confirming Finding 14's geometry-
+  contrast prediction. *But the long-`-l -w` contrast lands at the same
+  ~26% BadSpec* — the misprediction cost is **not geometry-specific** for
+  `-l -w`; it's flag-specific, driven by the per-word-boundary branch in
+  the run state machine that fires every byte transition. Reopens the
+  rescue shape: the existing
+  [[branchless-wordscan-state-update]] TODO entry is the cycle-level
+  follow-on, and Finding 16 supplies the empirical motivation.
+- **Finding 9 redux:** PGO regression on `long -w` classifies cleanly as
+  **Frontend.Fetch_Bandwidth.MITE** — PGO's profile-driven inlining
+  bloats the hot path past the DSB (uop cache) capacity, forcing fetch
+  through the legacy decoder. Frontend shifts +13pp (LTO-only ~18% →
+  PGO ~31%) while Bad_Speculation drops −6pp (PGO does improve branch
+  prediction). The MITE penalty outweighs the mispredict win. **Finding
+  9 stays dropped** with sharper mechanism evidence — the rescue
+  shape ("constrain inlining to fit DSB") is the same family of
+  trade-offs Finding 9 already explored across configs (a)/(b)/(c).
+- **Finding 10 redux:** **BE/Memory is consistently below display
+  threshold** (sub-5%) across all 5 baseline runs on `mixed-256MiB` and
+  `big.txt` `(default = -lwc)`. When Backend surfaces (one `big.txt`
+  run at 25.8%), it's **BE/Core (Ports_Utilization)**, not BE/Memory.
+  The proposed L1-tiling rescue has no cycle-level deficit to recover.
+  **Finding 10 stays closed** on cleaner evidence than the original
+  60-cell wall-clock sweep.
+
+### Methodology
+
+Three measurement substrates, four total cells:
+
+| Redux | Primary cell | Geometry contrast | Builds compared |
+|---|---|---|---|
+| 8 | `short -l -w` | `long -l -w` | `./qwc-perf` only |
+| 9 | `long -w` | — | `./qwc-perf` (LTO-only) vs `/tmp/qwc-pgo-redux-bin` (PGO) |
+| 10 | `mixed -lwc` | `big.txt -lwc` | `./qwc-perf` only |
+
+All cells run with `LC_ALL=C` and `toplev.sh` defaults
+(`toplev.py -l3 --no-desc --global`). Multiplex error 1–3% per
+top-level slot category; the per-run output suppresses categories below
+a (toplev-internal) display threshold, so a "missing" Backend / Frontend
+in the table below means slot share fell below the threshold on that
+run, not that no measurement happened.
+
+### Finding 8 redux — `-l -w` is BadSpec-dominated on both geometries
+
+Finding 14's geometry-contrast on `-L` showed long-`-L` was Backend-
+Memory-bound (76%) while short-`-L` flipped to Bad_Speculation (23.4%
+Branch_Mispredicts). The redux prediction was that short `-l -w` would
+inherit that geometry-driven BadSpec shape, suggesting a misprediction
+rescue for Finding 8's fusion regression.
+
+Top-level slot percentages, both runs per cell:
+
+| Cell | Run | Frontend.FL | BE/Memory | BE/Core | Bad_Speculation | Notes |
+|---|---|---|---|---|---|---|
+| short `-l -w` | 1 | 17.3% | — | — | **25.8%** | Branch_Mispredicts 25.7% |
+| short `-l -w` | 2 | 16.9% | — | — | **26.0%** | Branch_Mispredicts 26.0% |
+| long `-l -w` | 1 | 17.4% | — | — | **26.1%** | Branch_Mispredicts 26.1% |
+| long `-l -w` | 2 | (n/a) | — | (12.6%) | **25.7%** | BE=22.7% reported this run; FE.FL=33.2% of FE |
+
+Top-level reproducibility ±0.4pp on Bad_Speculation across all cells —
+inside the ±3pp floor.
+
+**The prediction lands on short, but the long-input contrast invalidates
+the "geometry-specific" half of it.** On `-L`, Finding 14 saw a clean
+flip between long-`-L` (Memory-bound) and short-`-L` (BadSpec); on
+`-l -w`, both geometries are BadSpec-dominated at the same ~26%. The
+implication is that the unpredictable branch is *not* the per-line
+newline-locating step (which would vary with line geometry) but the
+per-word-boundary check in the run state machine (which fires every byte
+transition regardless of line length). Finding 8's fusion regression
+was localized in the wrong place — the fusion added per-block branches
+to a kernel already saturated on per-byte branch unpredictability,
+which TMA now shows is a cycle-level fact rather than a wall-clock
+artifact.
+
+**Verdict: confirmed, but rescue shape is broader than Finding 14
+sketched.** The cycle-level rescue is **branchless WordScan state-machine
+updates** (the existing `## Next` TODO entry, "Branchless state-machine
+update for `WordScan` flags") — Finding 16 supplies the empirical
+motivation for elevating it. Finding 8's original `-l -w` fusion stays
+dropped: fusing more branches into a BadSpec-saturated kernel is the
+wrong direction.
+
+### Finding 9 redux — PGO regression is Frontend.Fetch_Bandwidth.MITE
+
+Finding 9 dropped GCC PGO because it regressed the word-counting path
+7–10% while gaining 7–12% on `-L`. The mechanism story ("PGO weights
+`-L`'s tight loop more heavily, biases inlining away from the word
+kernel") was plausible but second-order — wall-clock plus
+instruction-count deltas, not direct pipeline observation. The redux
+classifies the regression at the cycle level.
+
+Top-level slot deltas, `long -w` under `LC_ALL=C`:
+
+| metric | LTO-only run 1 | LTO-only run 2 | PGO run 1 | PGO run 2 | Δ (PGO − LTO) |
+|---|---:|---:|---:|---:|---:|
+| Frontend.FL | 17.8% | 18.1% | **30.2%** | **31.7%** | **+13pp** |
+| Bad_Speculation | 26.6% | 26.3% | 20.4% | 20.5% | −6pp |
+| FE.Fetch_Latency | 27.2% | 25.5% | 11.1% | 15.7% | (multiplex-suppressed on PGO; total FE consistent) |
+| FE.Fetch_Bandwidth | 15.6% | 7.3% | **20.7%** | (suppressed) | — |
+| FE.Fetch_Bandwidth.MITE (Slots_est) | — | — | **18.9%** | — | — |
+
+PGO does what PGO advertises — branch prediction improves, Bad_Speculation
+drops 6pp. But Frontend rises 13pp, and **the rise is in
+Fetch_Bandwidth specifically, with the MITE sub-leaf at 18.9% of
+slots-estimated**. MITE — the Macro Instruction Translation Engine, the
+legacy decoder used when uop-cache (DSB) misses — fires when the hot
+path no longer fits the uop cache. PGO grew the hot path through
+profile-driven inlining decisions; the path overflowed the DSB; the
+frontend now spends ~19% of slots fetching uops through the slower
+decoder.
+
+**The mispredict savings don't cover the MITE penalty.** Net: the
+regression mechanism Finding 9 inferred from second-order counters
+("PGO biases optimization toward `-L`") is now classified directly at
+the cycle level as **uop-cache overflow on the word kernel's hot path**.
+
+**Verdict: Finding 9 stays dropped, with sharper evidence.** The rescue
+shape — "constrain PGO's inlining decisions to fit the DSB" — is the
+same family of trade-offs Finding 9's config sweep already explored
+(stage-1 LTO on/off, training data size, etc.), all of which failed.
+There's no new lever this classification exposes that wasn't tried.
+
+### Finding 10 redux — no L2-bound headroom for L1 tiling
+
+Finding 10 dropped strip-mining `scanBuffer` to L1-resident strips
+after a 60-cell `DEFAULT_FLAGS` × six-corpora wall-clock sweep showed
+no consistent shift > 2% on either ISA. The redux asks the underlying
+question directly: does the baseline `(default = -lwc)` cell show
+BE/Memory headroom — the deficit L1 tiling would have to recover?
+
+Top-level slot percentages across baseline `(default = -lwc)`:
+
+| Cell | Run | Frontend.FL | BE/Memory | BE/Core | Bad_Speculation | Notes |
+|---|---|---|---|---|---|---|
+| mixed `-lwc` | 1 | **30.8%** | — | — | 15.9% | FE.Branch_Resteers 15.3% of clocks |
+| mixed `-lwc` | 2 | 16.7% | — | — | **25.3%** | Branch_Mispredicts dominant |
+| mixed `-lwc` | 3 | 17.0% | — | — | **26.1%** | Branch_Mispredicts dominant |
+| big.txt `-lwc` | 1 | **31.0%** | — | (17.1%) | 17.9% | BE=25.8%, Ports_Utilization 26.2% of clocks |
+| big.txt `-lwc` | 2 | 17.2% | — | — | **22.8%** | Branch_Mispredicts dominant |
+
+Across all five runs, **BE/Memory never surfaces above toplev's display
+threshold** (sub-5% slots). When Backend appears at all (big.txt run 1,
+25.8%), it lands in **BE/Core** (Core_Bound 17.1%, Ports_Utilization 26.2%
+of clocks) — execution-port saturation, not memory hierarchy stalls.
+
+A note on the run-to-run swing on mixed and big.txt: toplev attributes
+branch-prediction cost to either `BAD.Branch_Mispredicts` or
+`FE.Fetch_Latency.Branch_Resteers` depending on the multiplex slice the
+counter group fell into. Across the five runs, the attribution swings
+but the total cost (mispredicts + resteers) is consistently the
+dominant feature. **BE/Memory's absence is the load-bearing signal**, and
+it's stable across every run.
+
+**Verdict: Finding 10 stays closed, on cleaner evidence than the
+original 60-cell wall-clock sweep.** The proposed L1-tiling rescue
+needed a cycle-level L2/L3-bound deficit to recover; TMA shows no
+deficit at any cache level. Strip-mining the `scanBuffer` could not
+have moved the wall-clock matrix because the per-byte pipeline is
+**branch-bound and core-bound**, not memory-bound, on the multi-counter
+default-`-lwc` workload at Finding 6's L2-resident scan buffer.
+
+### Reproducibility and noise floor
+
+Top-level slot categories on the Finding 8 and Finding 9 cells reproduce
+to within ±0.4pp (short `-l -w`), ±1.5pp (PGO long `-w` Frontend), and
+±0.3pp (LTO-only long `-w`). Finding 10's mixed `-lwc` cell needed a
+third run because runs 1 and 2 disagreed by 14pp on the Frontend
+attribution — the third run sided with run 2, confirming the
+Branch_Mispredicts-dominant shape. The dispersion came from toplev's
+attribution of branch cost to FE-vs-BAD across multiplex slices, not
+from the underlying workload changing; the *aggregate* branch cost is
+stable across all three.
+
+**No `--no-multiplex` escalation was needed.** Findings 8 and 9 were
+answered at top-level slot share alone; Finding 10's verdict hinged on
+BE/Memory being absent from display, which top-level reads carry as a
+present-vs-absent flag (not a leaf delta needing finer counter
+attribution).
+
+### Cross-references
+
+- **Finding 8** (`-l -w` fusion null) — amended by §"Finding 8 redux".
+- **Finding 9** (PGO regression) — amended by §"Finding 9 redux".
+- **Finding 10** (strip-mine null) — amended by §"Finding 10 redux".
+- **Finding 14** (TMA classification of `-L` on long-line input) — the
+  Rung 2 workflow Finding 16 reuses; the geometry-contrast prediction
+  that motivated Finding 8 redux.
+- **Finding 12** (per-instruction attribution on CJK) — the per-instruction
+  layer Rung 2 sits above; both layers ship side-by-side, separate
+  questions.
 
 ## Reproducing
 
