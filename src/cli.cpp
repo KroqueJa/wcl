@@ -128,7 +128,9 @@ void printHelp()
       "                        newlines don't split records. Run\n"
       "                        `qwc --validate-csv --help` for its options "
       "(--delim,\n"
-      "                        --quote, --esc, --fast).\n"
+      "                        --quote, --esc, and "
+      "--all/--first/--list/--fast)."
+      "\n"
       "\n"
       "Output:\n"
       "  qwc matches wc's layout so it can stand in for it: each file "
@@ -320,11 +322,25 @@ static std::optional<i32> csvUsageErr( const char* msg )
   return 1;
 }
 
+// Apply a mode flag, rejecting a second one (the modes are mutually exclusive).
+// `seen` tracks whether any mode flag was already given.
+static std::optional<i32> setMode( CsvMode m, CsvMode& mode, bool& seen )
+{
+  if ( seen )
+    return csvUsageErr(
+        "--fast, --list, --first and --all are mutually exclusive"
+    );
+  mode = m;
+  seen = true;
+  return std::nullopt;
+}
+
 std::optional<i32> parseValidateCsvArgs(
-    int argc, char** argv, CsvDialect& d, bool& fast, const char*& filename
+    int argc, char** argv, CsvDialect& d, CsvMode& mode, const char*& filename
 )
 {
-  fast = false;
+  mode = CsvMode::All;  // default: list every ragged row
+  bool modeSeen = false;
   filename = nullptr;
   // argv[0] is the program, argv[1] is "--validate-csv"; parse from argv[2].
   for ( int i = 2; i < argc; ++i ) {
@@ -346,12 +362,26 @@ std::optional<i32> parseValidateCsvArgs(
       d.esc = a[6];
       d.backslashEsc = true;
     } else if ( std::strcmp( a, "--fast" ) == 0 ) {
-      fast = true;
+      if ( const std::optional<i32> e =
+               setMode( CsvMode::Fast, mode, modeSeen ) )
+        return e;
+    } else if ( std::strcmp( a, "--list" ) == 0 ) {
+      if ( const std::optional<i32> e =
+               setMode( CsvMode::List, mode, modeSeen ) )
+        return e;
+    } else if ( std::strcmp( a, "--first" ) == 0 ) {
+      if ( const std::optional<i32> e =
+               setMode( CsvMode::First, mode, modeSeen ) )
+        return e;
+    } else if ( std::strcmp( a, "--all" ) == 0 ) {
+      if ( const std::optional<i32> e =
+               setMode( CsvMode::All, mode, modeSeen ) )
+        return e;
     } else if ( std::strcmp( a, "-h" ) == 0 ||
                 std::strcmp( a, "--help" ) == 0 ) {
       std::fputs(
-          "Usage: qwc --validate-csv [--delim=,] [--quote=\"] [--esc=\\] "
-          "[--fast] FILE\n"
+          "Usage: qwc --validate-csv [--delim=,] [--quote=\"] [--esc=\\]\n"
+          "                          [--fast|--list|--first|--all] FILE\n"
           "\n"
           "Prove a CSV file is rectangular: every record has the same number "
           "of\n"
@@ -359,11 +389,16 @@ std::optional<i32> parseValidateCsvArgs(
           "is\n"
           "masked, so embedded delimiters and newlines do not split records. "
           "Reads\n"
-          "standard input when no FILE is given. Exits 0 when valid; on the "
-          "first\n"
-          "ragged record it prints \"bad row: N\" and exits 1. --fast skips "
-          "the\n"
-          "diagnostic and exits 1 immediately.\n",
+          "standard input when no FILE is given. Exits 0 when valid (printing\n"
+          "nothing), 1 when invalid. The report (on stdout, prefixed by the "
+          "file\n"
+          "name, or `-` for stdin) is selected by:\n"
+          "  --all    <name>: r1,r2,...  every ragged row, comma-separated "
+          "(default)\n"
+          "  --first  <name>: r1         just the first ragged row\n"
+          "  --list   <name>             just the name (handy across many "
+          "files)\n"
+          "  --fast   (no output)        validity as the exit code only\n",
           stdout
       );
       return 0;

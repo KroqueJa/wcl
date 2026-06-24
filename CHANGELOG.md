@@ -12,13 +12,17 @@ not generated from commit messages.
   is *rectangular* — every record has the same field count — faster than a full
   parse. Quoted content is masked (so embedded delimiters and newlines don't
   split records), with two configurable dialects: RFC-4180 doubled-quote by
-  default, or backslash-escape when `--esc` is given. Options: `--delim`,
-  `--quote` (`--quote=` disables quote handling), `--esc`, and `--fast`. Exits
-  0 when valid; on the first ragged record prints `bad row: N` and exits 1;
-  `--fast` skips the diagnostic and exits 1 immediately. On Apple Silicon it
-  validates a 268 MiB unquoted CSV ~**12× faster** than `zsv check --parser
-  fast`; see `benchmarks/README.md` Finding 18. NEON + portable scalar today;
-  AVX2 is a pending release-parity port.
+  default, or backslash-escape when `--esc` is given. Dialect options: `--delim`,
+  `--quote` (`--quote=` disables quote handling), `--esc`. A valid file prints
+  nothing and exits 0; an invalid file exits 1 and reports to **stdout**,
+  prefixed by the file name (`-` for stdin), in one of four mutually-exclusive
+  modes: `--all` (default) lists every ragged row, `<name>: 3,6,77` (capped at
+  1000 with a trailing `...`); `--first` lists only the first, `<name>: 3`;
+  `--list` prints just `<name>` (handy across many files); `--fast` prints
+  nothing (validity is the exit code only). On Apple Silicon it validates a
+  268 MiB unquoted CSV ~**12× faster** than `zsv check --parser fast`; see
+  `benchmarks/README.md` Finding 18. NEON + portable scalar today; AVX2 is a
+  pending release-parity port.
 
 ### Performance
 

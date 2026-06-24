@@ -46,18 +46,31 @@ CsvVerdict validateCsvFile(
     usize bytesPerThread = 64ull * 1024 * 1024
 );
 
-// CLI entry: run validateCsvFile, print `bad row: N` to stderr on an invalid
-// file (unless `fast`), and return the process exit code (0 valid, 1 invalid).
-// In fast mode the parallel driver exits immediately on the first known
-// mismatch, skipping the inspection re-scan.
+// How an invalid file is reported. All modes share the parallel validity check
+// (so the valid-file fast path is identical); they differ only in what a
+// failure prints and how much of it is computed. A valid file always prints
+// nothing and exits 0; any invalid file exits 1. Output goes to stdout (it is
+// data, meant to be piped / globbed), prefixed by the file name (`-` for
+// stdin).
+enum class CsvMode
+{
+  Fast,   // print nothing (validity is the exit code only)
+  List,   // print just "<name>" (no scan to enumerate rows -- stays fast)
+  First,  // print "<name>: <first bad row>"
+  All     // print "<name>: r1,r2,..." (every ragged row, capped) -- the default
+};
+
+// CLI entry: validate `filename` (empty name = stdin) and report per `mode`.
+// Returns the process exit code (0 valid, 1 invalid).
 int validateCsv(
-    const char* filename, const CsvDialect& d, bool fast,
+    const char* filename, const CsvDialect& d, CsvMode mode,
     usize bytesPerThread = 64ull * 1024 * 1024
 );
 
-// Parse the argv tail after `--validate-csv` into `d`/`fast`/`filename`.
+// Parse the argv tail after `--validate-csv` into `d`/`mode`/`filename`.
 // Returns a process exit code to stop (usage error or --help), or std::nullopt
-// to proceed. `filename` is left null for the stdin case.
+// to proceed. `filename` is left null for the stdin case; `mode` defaults to
+// CsvMode::All and the four mode flags are mutually exclusive.
 std::optional<i32> parseValidateCsvArgs(
-    int argc, char** argv, CsvDialect& d, bool& fast, const char*& filename
+    int argc, char** argv, CsvDialect& d, CsvMode& mode, const char*& filename
 );

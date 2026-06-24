@@ -2182,9 +2182,11 @@ restoring 12.4×. (A seeded re-scan from the offending chunk instead of
 from byte 0 would bound this; deferred — failure-with-diagnosis is the
 exceptional path and `--fast` already covers the latency-sensitive case.)
 
-Row-number convention: qwc's `bad row: N` is 1-based over logical records
-**including the header** (header = row 1), so on the `ragged` corpus qwc
-reports row 4467653 where zsv reports "Row 4467652" (zsv excludes the
+Output / row-number convention: a valid file prints nothing; an invalid one
+prints `<name>: <ragged rows>` to stdout (`--all`, the default), selectable
+down to `--first` / `--list` / `--fast`. Row numbers are 1-based over logical
+records **including the header** (header = row 1), so on the `ragged` corpus
+qwc reports row 4467653 where zsv reports "Row 4467652" (zsv excludes the
 header from its count). Both name the same physical line.
 
 **Validation.** `qwc_tests` green incl. a 1200-case dual-dialect fuzz vs

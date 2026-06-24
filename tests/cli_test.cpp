@@ -1174,20 +1174,45 @@ TEST( ValidateCsvCli, RectangularExitsZeroNoOutput )
   EXPECT_EQ( r.out, "" );
 }
 
-TEST( ValidateCsvCli, RaggedPrintsRowAndExitsOne )
+TEST( ValidateCsvCli, DefaultAllListsRaggedRows )
 {
-  // Capture qwc's own exit code (ec) before the cleanup rm, which would
-  // otherwise mask the non-zero status the way `cmd; rm` does.
-  std::string create = "printf '%b' 'a,b,c\\n1,2\\n' > /tmp/qwc_v_bad.csv && ";
+  // Default mode is --all: "<file>: r1,r2,..." on stdout. Capture qwc's own
+  // exit code before the cleanup rm (which would otherwise mask it).
+  std::string create =
+      "printf '%b' 'a,b,c\\n1,2\\n3,4\\n5,6,7,8\\n' > /tmp/qwc_v_bad.csv && ";
   CmdResult r =
       run( create + kBin +
-           " --validate-csv /tmp/qwc_v_bad.csv 2>&1; ec=$?; "
+           " --validate-csv /tmp/qwc_v_bad.csv; ec=$?; "
            "rm -f /tmp/qwc_v_bad.csv; exit $ec" );
   EXPECT_EQ( r.exitCode, 1 );
-  EXPECT_NE( r.out.find( "bad row: 2" ), std::string::npos );
+  EXPECT_EQ( r.out, "/tmp/qwc_v_bad.csv: 2,3,4\n" );
 }
 
-TEST( ValidateCsvCli, FastExitsOneNoDiagnostic )
+TEST( ValidateCsvCli, FirstModePrintsOnlyFirstRow )
+{
+  std::string create =
+      "printf '%b' 'a,b,c\\n1,2\\n3,4\\n5,6,7,8\\n' > /tmp/qwc_v_first.csv && ";
+  CmdResult r =
+      run( create + kBin +
+           " --validate-csv --first /tmp/qwc_v_first.csv; ec=$?; "
+           "rm -f /tmp/qwc_v_first.csv; exit $ec" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_EQ( r.out, "/tmp/qwc_v_first.csv: 2\n" );
+}
+
+TEST( ValidateCsvCli, ListModePrintsOnlyFilename )
+{
+  std::string create =
+      "printf '%b' 'a,b,c\\n1,2\\n3,4\\n' > /tmp/qwc_v_list.csv && ";
+  CmdResult r =
+      run( create + kBin +
+           " --validate-csv --list /tmp/qwc_v_list.csv; ec=$?; "
+           "rm -f /tmp/qwc_v_list.csv; exit $ec" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_EQ( r.out, "/tmp/qwc_v_list.csv\n" );
+}
+
+TEST( ValidateCsvCli, FastExitsOneNoOutput )
 {
   std::string create = "printf '%b' 'a,b,c\\n1,2\\n' > /tmp/qwc_v_f.csv && ";
   CmdResult r =
@@ -1195,7 +1220,28 @@ TEST( ValidateCsvCli, FastExitsOneNoDiagnostic )
            " --validate-csv --fast /tmp/qwc_v_f.csv 2>&1; ec=$?; "
            "rm -f /tmp/qwc_v_f.csv; exit $ec" );
   EXPECT_EQ( r.exitCode, 1 );
-  EXPECT_EQ( r.out.find( "bad row" ), std::string::npos );
+  EXPECT_EQ( r.out, "" );
+}
+
+TEST( ValidateCsvCli, ValidFilePrintsNothingEveryMode )
+{
+  std::string create =
+      "printf '%b' 'a,b,c\\n1,2,3\\n' > /tmp/qwc_v_okm.csv && ";
+  for ( const char* m: { "--all", "--first", "--list", "--fast" } ) {
+    CmdResult r =
+        run( create + kBin + " --validate-csv " + m +
+             " /tmp/qwc_v_okm.csv; ec=$?; "
+             "rm -f /tmp/qwc_v_okm.csv; exit $ec" );
+    EXPECT_EQ( r.exitCode, 0 ) << m;
+    EXPECT_EQ( r.out, "" ) << m;
+  }
+}
+
+TEST( ValidateCsvCli, ModesAreMutuallyExclusive )
+{
+  CmdResult r =
+      run( kBin + " --validate-csv --fast --list </dev/null 2>/dev/null" );
+  EXPECT_EQ( r.exitCode, 1 );
 }
 
 TEST( ValidateCsvCli, CustomDelimiter )
@@ -1229,7 +1275,8 @@ TEST( ValidateCsvCli, StdinRectangular )
 
 TEST( ValidateCsvCli, StdinRaggedRow )
 {
+  // stdin has no filename, so the report is prefixed with "-".
   CmdResult r = run( piped( "a,b\\n1,2,3\\n", "--validate-csv" ) + " 2>&1" );
   EXPECT_EQ( r.exitCode, 1 );
-  EXPECT_NE( r.out.find( "bad row: 2" ), std::string::npos );
+  EXPECT_EQ( r.out, "-: 2\n" );
 }

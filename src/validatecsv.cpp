@@ -9,9 +9,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -19,36 +19,22 @@
 
 namespace {
 
-// Carried state for the sequential validator, so it can be seeded for the
-// failure inspection re-scan (and a fresh-zeroed instance is the from-scratch
-// validateCsvBuffer). See validateCsvSeeded for the semantics.
-struct CsvSeed
-{
-  bool inQuotes = false;
-  bool escaped = false;
-  bool recordHasContent = false;
-  usize delims = 0;
-  usize row = 0;
-  bool haveExpected = false;
-  usize expected = 0;
-};
-
-// The one true sequential rectangularity check, parameterized by an entry seed.
-// A record completes at every unquoted '\n'; the first completed record's
-// delimiter count is the reference ("expected") and every later record (plus a
-// final record with no trailing newline) must match it. Inside a quoted region
-// delimiters and newlines are content; in backslash mode `esc` escapes the next
-// byte everywhere; a doubled quote `""` cancels to a zero-width region; '\r' is
-// content (so CRLF validates); a quote still open at EOF is an error.
-CsvVerdict validateCsvSeeded(
-    const char* buf, const usize len, const CsvDialect& d, CsvSeed s
+// The reference sequential rectangularity check. A record completes at every
+// unquoted '\n'; the first completed record's delimiter count is the reference
+// ("expected") and every later record (plus a final record with no trailing
+// newline) must match it. Inside a quoted region delimiters and newlines are
+// content; in backslash mode `esc` escapes the next byte everywhere; a doubled
+// quote `""` cancels to a zero-width region; '\r' is content (so CRLF
+// validates); a quote still open at EOF is an error. The byte-level path behind
+// validateCsvBuffer; collectBadRows mirrors it but enumerates every bad row.
+CsvVerdict validateCsvSequential(
+    const char* buf, const usize len, const CsvDialect& d
 )
 {
-  bool inQuotes = s.inQuotes, escaped = s.escaped;
-  bool recordHasContent = s.recordHasContent;
-  usize delims = s.delims, row = s.row;
-  bool haveExpected = s.haveExpected;
-  usize expected = s.expected;
+  bool inQuotes = false, escaped = false, recordHasContent = false;
+  usize delims = 0, row = 0;
+  bool haveExpected = false;
+  usize expected = 0;
   const auto delim = static_cast<unsigned char>( d.delim );
   const auto quote = static_cast<unsigned char>( d.quote );
   const auto esc = static_cast<unsigned char>( d.esc );
@@ -210,7 +196,7 @@ void csvWorker( CsvWorkerCtx* ctx )
 // entry-parity from "outside", set `expected` from the first completed record,
 // and check every record against it. Returns true iff the file is rectangular.
 // The authoritative valid/invalid verdict for the parallel path; the exact bad
-// row (when invalid) is found by the inspection re-scan.
+// rows (when invalid) are enumerated separately by collectBadRows.
 bool reconcile( const ChunkResult* res, usize nChunks )
 {
   bool inside = false, haveExpected = false, openContent = false;
@@ -259,11 +245,12 @@ bool reconcile( const ChunkResult* res, usize nChunks )
   return true;
 }
 
-// Parallel two-phase validation of a regular file. `inspect` controls whether,
-// on a detected violation, the file is re-scanned sequentially to pinpoint the
-// exact bad row (false for --fast: caller exits immediately).
-CsvVerdict validateCsvRegularParallel(
-    int fd, usize fileSize, const CsvDialect& d, usize bpt, bool inspect
+// Parallel validity check for a regular file: run the two-phase workers and the
+// seam reconciliation. Returns true iff the file is rectangular. The exact bad
+// rows (when invalid) are enumerated separately by collectBadRows, so the
+// common valid case stays the fast path -- no second read, no row enumeration.
+bool validateCsvParallelValid(
+    int fd, usize fileSize, const CsvDialect& d, usize bpt
 )
 {
   const usize nChunks = ( fileSize + bpt - 1 ) / bpt;
@@ -281,32 +268,92 @@ CsvVerdict validateCsvRegularParallel(
     for ( u32 t = 0; t < nWorkers; ++t ) pool.emplace_back( csvWorker, &ctx );
     for ( auto& th: pool ) th.join();
   }
-
-  if ( reconcile( res.data(), nChunks ) ) return { true, 0 };
-  if ( !inspect ) return { false, 0 };
-
-  // Failure inspection (non-fast): the sequential reference over the whole file
-  // gives the exact first bad row. This is also a cross-check on reconcile --
-  // a disagreement surfaces as a parity-test failure.
-  std::vector<char> whole;
-  readWholeRegular( fd, fileSize, whole );
-  const CsvVerdict v = validateCsvSeeded( whole.data(), whole.size(), d, {} );
-  return { false, v.badRow };
+  return reconcile( res.data(), nChunks );
 }
 
-// Open the file, classify it, and validate. `inspect` is threaded down to the
-// parallel path; the sequential paths always know the exact row anyway.
-CsvVerdict runValidate(
-    const char* filename, const CsvDialect& d, usize bytesPerThread,
-    bool inspect
+// Maximum ragged rows listed by --all before truncating with a trailing "...".
+// Bounds both the output line and the scan (collection stops once exceeded).
+constexpr usize kAllRowsCap = 1000;
+
+// Collect the 1-based row numbers of every ragged record (field count != the
+// first record's), plus an unterminated-quote / ragged-final-record error at
+// EOF. Same semantics as validateCsvSequential, but enumerating rather than
+// returning the first; stops once more than `cap` are found and returns true
+// (truncated). `bad` holds up to `cap` rows.
+bool collectBadRows(
+    const char* buf, usize len, const CsvDialect& d, usize cap,
+    std::vector<usize>& bad
 )
 {
-  if ( filename[0] == '\0' ) {  // standard input
-    std::vector<char> buf;
-    streamFdToBuffer( 0, buf );
-    return validateCsvSeeded( buf.data(), buf.size(), d, {} );
-  }
+  bool inQuotes = false, escaped = false, recordHasContent = false;
+  usize delims = 0, row = 0;
+  bool haveExpected = false;
+  usize expected = 0;
+  const auto delim = static_cast<unsigned char>( d.delim );
+  const auto quote = static_cast<unsigned char>( d.quote );
+  const auto esc = static_cast<unsigned char>( d.esc );
 
+  for ( usize i = 0; i < len; ++i ) {
+    const auto c = static_cast<unsigned char>( buf[i] );
+    if ( escaped ) {
+      escaped = false;
+      recordHasContent = true;
+      continue;
+    }
+    if ( d.quoting && d.backslashEsc && c == esc ) {
+      escaped = true;
+      recordHasContent = true;
+      continue;
+    }
+    if ( d.quoting && c == quote ) {
+      inQuotes = !inQuotes;
+      recordHasContent = true;
+      continue;
+    }
+    if ( !inQuotes && c == delim ) {
+      ++delims;
+      recordHasContent = true;
+      continue;
+    }
+    if ( !inQuotes && c == '\n' ) {
+      if ( !haveExpected ) {
+        haveExpected = true;
+        expected = delims;
+      } else if ( delims != expected ) {
+        if ( bad.size() == cap ) return true;
+        bad.push_back( row + 1 );
+      }
+      ++row;
+      delims = 0;
+      recordHasContent = false;
+      continue;
+    }
+    recordHasContent = true;
+  }
+  // At EOF the final record is bad if a quote is still open (unterminated) or
+  // it is a ragged final record with no trailing newline -- either way, one
+  // row.
+  if ( inQuotes ||
+       ( recordHasContent && haveExpected && delims != expected ) ) {
+    if ( bad.size() == cap ) return true;
+    bad.push_back( row + 1 );
+  }
+  return false;
+}
+
+// Classified input handle. `fd == 0` with `!owned` is standard input.
+struct InputInfo
+{
+  int fd;
+  bool owned;       // we opened it (must close)
+  usize size;       // st_size (regular files)
+  bool regular;     // S_ISREG && size > 0
+  bool bigRegular;  // regular && size > bytesPerThread (worth chunking)
+};
+
+InputInfo openInput( const char* filename, usize bpt )
+{
+  if ( filename[0] == '\0' ) return { 0, false, 0, false, false };  // stdin
   const int fd = open( filename, O_RDONLY );
   if ( fd < 0 ) {
     std::fprintf( stderr, "Error opening file: %s\n", filename );
@@ -317,22 +364,51 @@ CsvVerdict runValidate(
     std::fprintf( stderr, "Error stating file: %s\n", filename );
     std::_Exit( 1 );
   }
-  const usize fileSize = static_cast<usize>( st.st_size );
+  const usize size = static_cast<usize>( st.st_size );
+  const bool reg = S_ISREG( st.st_mode ) && size > 0;
+  return { fd, true, size, reg, reg && size > bpt };
+}
 
-  CsvVerdict v;
-  if ( !S_ISREG( st.st_mode ) || fileSize == 0 ) {
-    std::vector<char> buf;
-    streamFdToBuffer( fd, buf );  // non-regular or untrustworthy size
-    v = validateCsvSeeded( buf.data(), buf.size(), d, {} );
-  } else if ( fileSize <= bytesPerThread ) {
-    std::vector<char> buf;
-    readWholeRegular( fd, fileSize, buf );  // single chunk: just go sequential
-    v = validateCsvSeeded( buf.data(), buf.size(), d, {} );
-  } else {
-    v = validateCsvRegularParallel( fd, fileSize, d, bytesPerThread, inspect );
+void closeInput( const InputInfo& in )
+{
+  if ( in.owned ) close( in.fd );
+}
+
+// Read the whole input into `buf`: stdin / non-regular streamed to EOF, a
+// regular file read by size with pread.
+void readInputBuffer( const InputInfo& in, std::vector<char>& buf )
+{
+  if ( !in.owned )
+    streamFdToBuffer( 0, buf );
+  else if ( !in.regular )
+    streamFdToBuffer( in.fd, buf );
+  else
+    readWholeRegular( in.fd, in.size, buf );
+}
+
+// Enumerate ragged rows in `buf` and print the First/All report to stdout.
+// Returns the exit code (0 when the buffer turns out valid -- reachable only on
+// the stdin/small path, where validity is not pre-checked).
+int reportRows(
+    const char* name, CsvMode mode, const std::vector<char>& buf,
+    const CsvDialect& d
+)
+{
+  const usize cap = mode == CsvMode::First ? usize{ 1 } : kAllRowsCap;
+  std::vector<usize> bad;
+  const bool truncated = collectBadRows( buf.data(), buf.size(), d, cap, bad );
+  if ( bad.empty() ) return 0;
+  std::string line( name );
+  line += ": ";
+  for ( usize i = 0; i < bad.size(); ++i ) {
+    if ( i ) line += ',';
+    line += std::to_string( bad[i] );
   }
-  close( fd );
-  return v;
+  // Only --all signals "there were more"; --first inherently lists just one.
+  if ( truncated && mode == CsvMode::All ) line += ",...";
+  line += '\n';
+  std::fputs( line.c_str(), stdout );
+  return 1;
 }
 
 }  // namespace
@@ -341,26 +417,77 @@ CsvVerdict validateCsvBuffer(
     const char* buf, const usize len, const CsvDialect& d
 )
 {
-  return validateCsvSeeded( buf, len, d, {} );
+  return validateCsvSequential( buf, len, d );
 }
 
 CsvVerdict validateCsvFile(
     const char* filename, const CsvDialect& d, usize bytesPerThread
 )
 {
-  return runValidate( filename, d, bytesPerThread, /*inspect=*/true );
+  const InputInfo in = openInput( filename, bytesPerThread );
+  if ( in.bigRegular ) {
+    if ( validateCsvParallelValid( in.fd, in.size, d, bytesPerThread ) ) {
+      closeInput( in );
+      return { true, 0 };
+    }
+    std::vector<char> buf;  // invalid: read to pinpoint the first bad row
+    readWholeRegular( in.fd, in.size, buf );
+    closeInput( in );
+    std::vector<usize> bad;
+    collectBadRows( buf.data(), buf.size(), d, 1, bad );
+    return { false, bad.empty() ? usize{ 0 } : bad[0] };
+  }
+  std::vector<char> buf;
+  readInputBuffer( in, buf );
+  closeInput( in );
+  std::vector<usize> bad;
+  collectBadRows( buf.data(), buf.size(), d, 1, bad );
+  if ( bad.empty() ) return { true, 0 };
+  return { false, bad[0] };
 }
 
 int validateCsv(
-    const char* filename, const CsvDialect& d, bool fast, usize bytesPerThread
+    const char* filename, const CsvDialect& d, CsvMode mode,
+    usize bytesPerThread
 )
 {
-  const CsvVerdict v =
-      runValidate( filename, d, bytesPerThread, /*inspect=*/!fast );
-  if ( v.valid ) return 0;
-  if ( fast ) std::_Exit( 1 );  // skip the diagnostic, exit on first mismatch
-  std::fprintf(
-      stderr, "bad row: %ju\n", static_cast<std::uintmax_t>( v.badRow )
-  );
-  return 1;
+  const char* name = filename[0] != '\0' ? filename : "-";
+  const InputInfo in = openInput( filename, bytesPerThread );
+
+  // Big regular file: parallel validity check first (the fast path), reading
+  // the whole file only when a failure must be enumerated (First/All).
+  if ( in.bigRegular ) {
+    const bool valid =
+        validateCsvParallelValid( in.fd, in.size, d, bytesPerThread );
+    if ( valid ) {
+      closeInput( in );
+      return 0;
+    }
+    if ( mode == CsvMode::Fast ) {
+      closeInput( in );
+      return 1;
+    }
+    if ( mode == CsvMode::List ) {
+      closeInput( in );
+      std::printf( "%s\n", name );
+      return 1;
+    }
+    std::vector<char> buf;
+    readWholeRegular( in.fd, in.size, buf );
+    closeInput( in );
+    return reportRows( name, mode, buf, d );
+  }
+
+  // stdin / non-regular / small regular: one buffered sequential pass.
+  std::vector<char> buf;
+  readInputBuffer( in, buf );
+  closeInput( in );
+  if ( mode == CsvMode::Fast || mode == CsvMode::List ) {
+    std::vector<usize> bad;
+    collectBadRows( buf.data(), buf.size(), d, 1, bad );
+    if ( bad.empty() ) return 0;
+    if ( mode == CsvMode::List ) std::printf( "%s\n", name );
+    return 1;
+  }
+  return reportRows( name, mode, buf, d );
 }
