@@ -209,8 +209,8 @@ std::string randToken( std::mt19937& rng )
 {
   static const char alnum[] = "abcdefABCDEF0123456789";
   std::string t;
-  const int n = 1 + static_cast<int>( rng() % 4 );
-  for ( int i = 0; i < n; ++i ) t += alnum[rng() % ( sizeof( alnum ) - 1 )];
+  const i32 n = 1 + static_cast<i32>( rng() % 4 );
+  for ( i32 i = 0; i < n; ++i ) t += alnum[rng() % ( sizeof( alnum ) - 1 )];
   return t;
 }
 
@@ -269,7 +269,7 @@ TEST( ValidateCsvParallel, RandomFuzzMatchesReference )
 {
   std::mt19937 rng( 0xC5C0FFEE );
   const usize bpts[] = { 1, 2, 3, 4, 7, 13, 32 };
-  for ( int iter = 0; iter < 1200; ++iter ) {
+  for ( i32 iter = 0; iter < 1200; ++iter ) {
     const CsvDialect d = ( iter & 1 ) ? bsl() : rfc();
     const std::string s = genRandomCsv( rng, d );
     const usize bpt = bpts[rng() % ( sizeof( bpts ) / sizeof( bpts[0] ) )];
@@ -291,7 +291,7 @@ TEST( ValidateCsvParallel, RandomFuzzMatchesReference )
 TEST( ValidateCsvNeon, LargeUnquotedRectangular )
 {
   std::string s;
-  for ( int r = 0; r < 5000; ++r ) s += "alpha,beta,gamma,delta\n";
+  for ( i32 r = 0; r < 5000; ++r ) s += "alpha,beta,gamma,delta\n";
   for ( const usize bpt:
         { usize{ 64 }, usize{ 256 }, usize{ 4096 }, usize{ 65536 } } )
     EXPECT_TRUE( viaFile( s, rfc(), bpt ).valid ) << "bpt=" << bpt;
@@ -300,7 +300,7 @@ TEST( ValidateCsvNeon, LargeUnquotedRectangular )
 TEST( ValidateCsvNeon, LargeUnquotedRaggedRowReported )
 {
   std::string s;
-  for ( int r = 0; r < 5000; ++r ) s += "a,b,c,d\n";
+  for ( i32 r = 0; r < 5000; ++r ) s += "a,b,c,d\n";
   s += "a,b,c\n";  // row 5001 has one field too few
   for ( const usize bpt: { usize{ 64 }, usize{ 4096 } } )
     EXPECT_EQ( viaFile( s, rfc(), bpt ).badRow, 5001u ) << "bpt=" << bpt;
@@ -309,8 +309,64 @@ TEST( ValidateCsvNeon, LargeUnquotedRaggedRowReported )
 TEST( ValidateCsvNeon, LargeSprinkledQuotesRectangular )
 {
   std::string s;
-  for ( int r = 0; r < 4000; ++r )
+  for ( i32 r = 0; r < 4000; ++r )
     s += "id,\"free, text\nwith newline\",tag\n";  // 3 fields, quoted middle
   for ( const usize bpt: { usize{ 32 }, usize{ 4096 }, usize{ 65536 } } )
     EXPECT_TRUE( viaFile( s, rfc(), bpt ).valid ) << "bpt=" << bpt;
+}
+
+// ---------------------------------------------------------------------------
+// Backslash-escape (--esc) stress for the SIMD find_escaped odd-run mask:
+// random-length backslash runs before quotes/delimiters/newlines/content, in
+// and out of quotes, validated across chunk sizes that straddle both 16-byte
+// block boundaries and chunk seams. The NEON kernel (escaped mask + prefix-XOR)
+// must agree with the independent reference on every input.
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string randBackslashField( std::mt19937& rng )
+{
+  static const char follow[] = "\",x\n";  // quote, delim, content, newline
+  std::string inner;
+  const i32 parts = 1 + static_cast<i32>( rng() % 4 );
+  for ( i32 i = 0; i < parts; ++i ) {
+    inner.append( rng() % 5, '\\' );  // 0..4 backslashes (even/odd runs)
+    inner += follow[rng() % 4];
+  }
+  return ( rng() % 2 ) ? "\"" + inner + "\"" : inner;  // quoted or bare
+}
+
+std::string genBackslashCsv( std::mt19937& rng )
+{
+  const usize fields = 1 + rng() % 3;
+  const usize records = 1 + rng() % 8;
+  std::string out;
+  for ( usize r = 0; r < records; ++r ) {
+    for ( usize c = 0; c < fields; ++c ) {
+      if ( c ) out += ',';
+      out += randBackslashField( rng );
+    }
+    out += '\n';
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST( ValidateCsvParallel, BackslashEscapeStressMatchesReference )
+{
+  std::mt19937 rng( 0xBACC5EED );
+  for ( i32 it = 0; it < 600; ++it ) {
+    const std::string s = genBackslashCsv( rng );
+    const CsvVerdict want = refValidateCsv( s, bsl() );
+    for ( const usize bpt:
+          { usize{ 1 }, usize{ 7 }, usize{ 16 }, usize{ 64 } } ) {
+      const CsvVerdict got = viaFile( s, bsl(), bpt );
+      ASSERT_EQ( got.valid, want.valid )
+          << "it=" << it << " bpt=" << bpt << " s=[" << s << "]";
+      if ( !want.valid )
+        ASSERT_EQ( got.badRow, want.badRow )
+            << "it=" << it << " bpt=" << bpt << " s=[" << s << "]";
+    }
+  }
 }

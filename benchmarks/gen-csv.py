@@ -30,20 +30,25 @@ def token(rng):
     return rng.choice(WORDS) + str(rng.randint(0, 9999))
 
 
-def quoted_freetext(rng):
+def quoted_freetext(rng, backslash=False):
     # A quoted field with embedded commas and the occasional embedded newline,
     # so the value spans column- and row-delimiters that must stay masked.
     parts = [rng.choice(WORDS) for _ in range(rng.randint(2, 5))]
     sep = ", " if rng.random() < 0.7 else "\n"
-    return '"' + sep.join(parts) + '"'
+    inner = sep.join(parts)
+    if backslash:
+        # Backslash-escaped quote and delimiter inside the quoted field: the
+        # validator must mask these so they don't toggle / split.
+        inner += '\\"' + rng.choice(WORDS) + "\\," + rng.choice(WORDS)
+    return '"' + inner + '"'
 
 
-def make_row(rng, shape):
+def make_row(rng, shape, backslash):
     if shape == "heavy":
-        return ",".join('"' + token(rng) + '"' for _ in range(6))
+        return ",".join(quoted_freetext(rng, backslash) for _ in range(6))
     if shape == "sprinkled":
         cols = [token(rng) for _ in range(5)]
-        cols.insert(2, quoted_freetext(rng))  # one quoted column of six
+        cols.insert(2, quoted_freetext(rng, backslash))  # one quoted column
         return ",".join(cols)
     return ",".join(token(rng) for _ in range(6))  # unquoted / ragged
 
@@ -55,12 +60,16 @@ def main():
     ap.add_argument("--size", type=int, default=256 * 1024 * 1024,
                     help="approximate target size in bytes")
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--backslash", action="store_true",
+                    help="quoted fields use backslash escapes (validate with --esc)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
     here = os.path.dirname(os.path.abspath(__file__))
-    out = args.out or os.path.join(here, "test-data", f"csv-{args.shape}.csv")
+    suffix = "-esc" if args.backslash else ""
+    out = args.out or os.path.join(
+        here, "test-data", f"csv-{args.shape}{suffix}.csv")
     os.makedirs(os.path.dirname(out), exist_ok=True)
 
     written = 0
@@ -69,7 +78,7 @@ def main():
     with open(out, "w", encoding="utf-8") as f:
         f.write("col0,col1,col2,col3,col4,col5\n")  # header (6 fields)
         while written < args.size:
-            row = make_row(rng, args.shape) + "\n"
+            row = make_row(rng, args.shape, args.backslash) + "\n"
             buf.append(row)
             buf_bytes += len(row)
             written += len(row)

@@ -240,8 +240,8 @@ inline usize refMaxLineLen( const std::string& s )
 inline CsvVerdict refValidateCsv( const std::string& s, const CsvDialect& d )
 {
   bool inQuotes = false, escaped = false, recordHasContent = false;
-  usize delims = 0, row = 0;
-  long expected = -1;  // -1 == unset
+  bool haveExpected = false;
+  usize delims = 0, row = 0, expected = 0;
   for ( usize i = 0; i < s.size(); ++i ) {
     const auto c = static_cast<unsigned char>( s[i] );
     if ( escaped ) {
@@ -266,10 +266,12 @@ inline CsvVerdict refValidateCsv( const std::string& s, const CsvDialect& d )
       continue;
     }
     if ( !inQuotes && c == '\n' ) {
-      if ( expected < 0 )
-        expected = static_cast<long>( delims );
-      else if ( static_cast<long>( delims ) != expected )
+      if ( !haveExpected ) {
+        haveExpected = true;
+        expected = delims;
+      } else if ( delims != expected ) {
         return { false, row + 1 };
+      }
       ++row;
       delims = 0;
       recordHasContent = false;
@@ -278,8 +280,7 @@ inline CsvVerdict refValidateCsv( const std::string& s, const CsvDialect& d )
     recordHasContent = true;
   }
   if ( inQuotes ) return { false, row + 1 };
-  if ( recordHasContent && expected >= 0 &&
-       static_cast<long>( delims ) != expected )
+  if ( recordHasContent && haveExpected && delims != expected )
     return { false, row + 1 };
   return { true, 0 };
 }

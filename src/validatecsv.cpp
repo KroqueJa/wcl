@@ -92,7 +92,7 @@ u32 maxThreads()
 
 // Stream an fd to EOF into `out` (standard input, FIFOs, devices, zero-size
 // regular files -- anything fstat cannot size).
-void streamFdToBuffer( int fd, std::vector<char>& out )
+void streamFdToBuffer( i32 fd, std::vector<char>& out )
 {
   char tmp[usize{ 64 } * 1024];
   isize n;
@@ -101,7 +101,7 @@ void streamFdToBuffer( int fd, std::vector<char>& out )
 }
 
 // Read [0, size) of a regular file into `out` via pread.
-void readWholeRegular( int fd, usize size, std::vector<char>& out )
+void readWholeRegular( i32 fd, usize size, std::vector<char>& out )
 {
   out.resize( size );
   usize got = 0;
@@ -117,7 +117,7 @@ void readWholeRegular( int fd, usize size, std::vector<char>& out )
 // The hypothesis-independent backslash-escape state of the byte at `start`:
 // true iff an odd-length run of `esc` bytes immediately precedes it. Bounded by
 // the run length (~O(1) on real input); only relevant in backslash mode.
-bool entryEscapedAt( int fd, usize start, const CsvDialect& d )
+bool entryEscapedAt( i32 fd, usize start, const CsvDialect& d )
 {
   if ( !d.quoting || !d.backslashEsc || start == 0 ) return false;
   const auto esc = static_cast<unsigned char>( d.esc );
@@ -152,7 +152,7 @@ struct ChunkResult
 // cursor so chunk size is exactly `bpt`.
 struct CsvWorkerCtx
 {
-  int fd;
+  i32 fd;
   usize fileSize;
   usize bpt;
   usize nChunks;
@@ -181,11 +181,22 @@ void csvWorker( CsvWorkerCtx* ctx )
       got += static_cast<usize>( n );
     }
     ChunkResult& r = ctx->out[i];
+    if ( ctx->d->backslashEsc ) {
+      // In backslash mode an escape can flip a delimiter/newline into content
+      // anywhere -- including the chunk's first byte, escaped by a `\` carried
+      // from the previous chunk -- so the quote-blind clean path is never safe.
+      // Every chunk takes the quote-aware path with its resolved entry-escape.
+      const bool entryEsc = entryEscapedAt( ctx->fd, start, *ctx->d );
+      csvQuotedChunk( buf.data(), got, *ctx->d, entryEsc, r.h0, r.h1 );
+      r.dirty = true;
+      continue;
+    }
     bool sawQuote = false;
     csvBlindChunk( buf.data(), got, *ctx->d, r.clean, sawQuote );
     if ( sawQuote ) {
-      const bool entryEsc = entryEscapedAt( ctx->fd, start, *ctx->d );
-      csvQuotedChunk( buf.data(), got, *ctx->d, entryEsc, r.h0, r.h1 );
+      csvQuotedChunk(
+          buf.data(), got, *ctx->d, /*entryEscaped=*/false, r.h0, r.h1
+      );
       r.dirty = true;
     }
   }
@@ -249,7 +260,7 @@ bool reconcile( const ChunkResult* res, usize nChunks )
 // rows (when invalid) are enumerated separately by collectBadRows, so the
 // common valid case stays the fast path -- no second read, no row enumeration.
 bool validateCsvParallelValid(
-    int fd, usize fileSize, const CsvDialect& d, usize bpt
+    i32 fd, usize fileSize, const CsvDialect& d, usize bpt
 )
 {
   const usize nChunks = ( fileSize + bpt - 1 ) / bpt;
@@ -343,7 +354,7 @@ bool collectBadRows(
 // Classified input handle. `fd == 0` with `!owned` is standard input.
 struct InputInfo
 {
-  int fd;
+  i32 fd;
   bool owned;       // we opened it (must close)
   usize size;       // st_size (regular files)
   bool regular;     // S_ISREG && size > 0
@@ -353,7 +364,7 @@ struct InputInfo
 InputInfo openInput( const char* filename, usize bpt )
 {
   if ( filename[0] == '\0' ) return { 0, false, 0, false, false };  // stdin
-  const int fd = open( filename, O_RDONLY );
+  const i32 fd = open( filename, O_RDONLY );
   if ( fd < 0 ) {
     std::fprintf( stderr, "Error opening file: %s\n", filename );
     std::_Exit( 1 );
@@ -388,7 +399,7 @@ void readInputBuffer( const InputInfo& in, std::vector<char>& buf )
 // Enumerate ragged rows in `buf` and print the First/All report to stdout.
 // Returns the exit code (0 when the buffer turns out valid -- reachable only on
 // the stdin/small path, where validity is not pre-checked).
-int reportRows(
+i32 reportRows(
     const char* name, CsvMode mode, const std::vector<char>& buf,
     const CsvDialect& d
 )
@@ -448,7 +459,7 @@ CsvVerdict validateCsvFile(
   return { false, bad[0] };
 }
 
-int validateCsv(
+i32 validateCsv(
     const char* filename, const CsvDialect& d, CsvMode mode,
     usize bytesPerThread
 )
@@ -494,7 +505,7 @@ int validateCsv(
   return reportRows( name, mode, buf, d );
 }
 
-int validateCsvFiles(
+i32 validateCsvFiles(
     const std::vector<const char*>& files, const CsvDialect& d, CsvMode mode,
     usize bytesPerThread
 )
@@ -505,7 +516,7 @@ int validateCsvFiles(
   // Validate each file in argument order, each with its own internal
   // chunk-parallelism; validateCsv prints that file's report (nothing when it
   // is valid). Exit 1 if any file fails; --fast bails on the first failure.
-  int rc = 0;
+  i32 rc = 0;
   for ( const char* f: files ) {
     if ( validateCsv( f, d, mode, bytesPerThread ) != 0 ) {
       rc = 1;

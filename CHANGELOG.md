@@ -27,6 +27,15 @@ not generated from commit messages.
   `benchmarks/README.md` Finding 18. NEON + portable scalar today; AVX2 is a
   pending release-parity port.
 
+### Fixed
+
+- `--validate-csv --esc=…` (backslash dialect) could report a wrong verdict on
+  input where an escaped delimiter or newline (`\,` / `\⏎`) fell in a
+  quote-free chunk, or was escaped by a `\` carried across a chunk boundary:
+  the quote-blind classification missed it, so a record's field count could be
+  mis-counted. Backslash mode now takes the escape-aware path for every chunk.
+  RFC-4180 (no `--esc`) was never affected. (Found by the backslash-run fuzz.)
+
 ### Performance
 
 - NEON (Apple Silicon) `--validate-csv` on **quoted** CSV is ~**3–4× faster**:
@@ -34,9 +43,10 @@ not generated from commit messages.
   movemask + prefix-XOR (`vmull_p64`/PMULL, or a shift-XOR ladder) shared across
   both entry hypotheses, instead of a per-byte scalar walk. On 268 MiB corpora
   this takes the quoted-CSV margin over `zsv check --parser fast` from ~1.7× to
-  ~5–8× (RFC-4180 dialect; the `--esc` backslash dialect keeps the scalar walk).
-  The unquoted fast path is unchanged. `-DQWC_CSV_NEON_PHASE2=OFF` restores the
-  scalar Phase-2. See `benchmarks/README.md` Finding 19.
+  ~5–8× for RFC-4180; the `--esc` backslash dialect (which adds the simdjson
+  odd-run escaped mask) is ~**4–5×** over the scalar walk. The unquoted fast
+  path is unchanged. `-DQWC_CSV_NEON_PHASE2=OFF` restores the scalar Phase-2.
+  See `benchmarks/README.md` Finding 19.
 - NEON (Apple Silicon) word counting (`-w`, `-l -w`, default `-lwc`) is
   faster. The kernel now emulates the missing NEON movemask with the `vshrn`
   shift-narrow "nibble" trick over 16-byte blocks instead of a `vaddv`

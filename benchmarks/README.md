@@ -2234,21 +2234,35 @@ for both hypotheses; the running entry-outside quote parity carries across
 delimiter/newline (they sit inside quotes), so `segmentBits16` iterates almost
 no real newlines — the segmentation, not the mask build, is the variable cost.
 
-**Scope.** RFC-4180 (doubled-quote) only. The backslash (`--esc`) dialect keeps
-the scalar walk — its `escaped` odd-run mask is the error-prone simdjson
-`find_escaped` and is not exercised by these corpora; SIMD-ising it is a tracked
-follow-up. `unquoted` is unchanged (no chunk is dirty, so Phase-2 never runs):
-the Finding-18 fast path is untouched.
+**Both dialects.** RFC-4180 (doubled-quote) and the backslash (`--esc`) dialect
+are both SIMD. Backslash adds the simdjson odd-backslash-run mask
+(`findEscaped16`, `prevEscaped` carried across blocks) to clear escaped
+quotes/delims/newlines before the prefix-XOR; on `-esc` corpora it is
+**5.3× (sprinkled) / 4.1× (heavy)** over the scalar walk (`-DQWC_CSV_NEON_PHASE2=OFF`;
+zsv is not a baseline here — it does not implement backslash escaping).
+`unquoted` is unchanged (no chunk is dirty, so Phase-2 never runs): the
+Finding-18 fast path is untouched.
+
+**Correctness bug found en route (now fixed).** The backslash SIMD work added a
+hard fuzz (random-length backslash runs straddling block *and* chunk
+boundaries), which exposed a **pre-existing** driver bug: a quote-free chunk was
+classified "clean" and counted by the escape-blind Phase-1 kernel, so an escaped
+delimiter/newline (`\,` / `\⏎`) in a quote-free chunk — or one escaped by a `\`
+carried from the previous chunk — was miscounted, yielding wrong verdicts on
+`--esc` input at chunk boundaries. Fix: in backslash mode every chunk takes the
+quote-aware path with its resolved entry-escape (no quote-blind fast path). RFC
+mode is unaffected. The fuzz is now a permanent regression guard.
 
 **Lesson recorded.** Finding 18 dropped this as YAGNI from the *parallel scalar
 Phase-2 already beating zsv 1.7×* — true, but "beats the baseline" set the bar
 at the wrong tool. The right question was "is there headroom in our own kernel",
 and there was a 3–4×. Default `QWC_CSV_NEON_PHASE2=ON`; `OFF` keeps the scalar
 A/B baseline. Validation: `qwc_tests` green incl. the 1200-case RFC+backslash
-fuzz routed through the prefix-XOR path and the chunk-seam stress; ASan+UBSan and
-TSan clean. **Port status: AVX2 unchanged** — still the release-parity blocker;
-the prefix-XOR maps to `_mm_clmulepi64_si128` and the bit-per-byte movemask to
-`_mm256_movemask_epi8` when that port is built.
+fuzz, the 600-case backslash-run stress, and the chunk-seam stress; ASan+UBSan
+and TSan clean. **Port status: AVX2 unchanged** — still the release-parity
+blocker, now for both phases *and* both dialects; the prefix-XOR maps to
+`_mm_clmulepi64_si128`, the bit-per-byte movemask to `_mm256_movemask_epi8`,
+and `findEscaped16` ports directly.
 
 ## Reproducing
 

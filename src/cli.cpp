@@ -336,14 +336,14 @@ static std::optional<i32> setMode( CsvMode m, CsvMode& mode, bool& seen )
 }
 
 std::optional<i32> parseValidateCsvArgs(
-    int argc, char** argv, CsvDialect& d, CsvMode& mode,
+    i32 argc, char** argv, CsvDialect& d, CsvMode& mode,
     std::vector<const char*>& files
 )
 {
   mode = CsvMode::All;  // default: list every ragged row
   bool modeSeen = false;
   // argv[0] is the program, argv[1] is "--validate-csv"; parse from argv[2].
-  for ( int i = 2; i < argc; ++i ) {
+  for ( i32 i = 2; i < argc; ++i ) {
     const char* a = argv[i];
     if ( std::strncmp( a, "--delim=", 8 ) == 0 ) {
       if ( a[8] == '\0' || a[9] != '\0' )

@@ -15,9 +15,10 @@
 // csvQuotedChunk (Phase 2) is gated by QWC_CSV_NEON_PHASE2 (CMake, default ON):
 //   ON : the in-quote mask is built with a bit-per-byte movemask + prefix-XOR
 //        (vmull_p64/PMULL where available, else a shift-XOR ladder); both entry
-//        hypotheses share that one construction (Q_in = ~Q_out). RFC-4180
-//        (doubled-quote) dialect only -- the backslash escaped-mask is the
-//        error-prone simdjson odd-run and stays on the shared scalar walk.
+//        hypotheses share that one construction (Q_in = ~Q_out). The backslash
+//        (--esc) dialect additionally clears escaped quotes/delims/newlines via
+//        the simdjson odd-backslash-run mask (findEscaped16) before the
+//        prefix-XOR, carried across blocks by prevEscaped.
 //   OFF: the whole of Phase 2 delegates to the shared scalar walk (the A/B
 //        baseline for measuring whether the SIMD construction pays off).
 
@@ -194,6 +195,63 @@ inline void quotedStep(
   st.sinceNl = true;
 }
 
+// Backslash-escaped variant of quotedStep for the tail: an escaped byte (and
+// the escape byte itself) is literal content; the escape state carries.
+inline void quotedStepEsc(
+    const unsigned char c, const u8 delim, const u8 quote, const u8 esc,
+    bool& inQ, bool& escaped, CsvBlindState& st
+)
+{
+  if ( escaped ) {
+    escaped = false;
+    st.sinceNl = true;
+    return;
+  }
+  if ( c == esc ) {
+    escaped = true;
+    st.sinceNl = true;
+    return;
+  }
+  if ( c == quote ) {
+    inQ = !inQ;
+    st.sinceNl = true;
+    return;
+  }
+  if ( !inQ && c == delim ) {
+    ++st.cur;
+    st.sinceNl = true;
+    return;
+  }
+  if ( !inQ && c == '\n' ) {
+    csvBlindClose( st );
+    return;
+  }
+  st.sinceNl = true;
+}
+
+// The `escaped` bitmask for one 16-byte block: bit i set iff byte i is escaped
+// (preceded by an odd-length run of `esc` bytes). simdjson's branchless
+// odd-backslash-run algorithm, adapted to 16-bit blocks; `prevEscaped` (0/1)
+// carries the run state across blocks and is seeded by the chunk's
+// entryEscaped.
+inline u32 findEscaped16( u32 backslash, u32& prevEscaped )
+{
+  if ( backslash == 0 ) {
+    const u32 escaped = prevEscaped;
+    prevEscaped = 0;
+    return escaped;
+  }
+  const u32 kEven = 0x5555u;  // bits 0,2,4,...
+  backslash &= ~prevEscaped;  // a backslash that is itself escaped is inert
+  const u32 followsEscape = ( ( backslash << 1 ) | prevEscaped ) & 0xFFFFu;
+  const u32 oddStarts = backslash & ~kEven & ~followsEscape & 0xFFFFu;
+  const u32 sum =
+      oddStarts + backslash;         // carry-propagate through runs (17 bits)
+  prevEscaped = ( sum >> 16 ) & 1u;  // carry out of bit 15 -> next block
+  const u32 invert = ( sum << 1 ) & 0xFFFFu;
+  return ( kEven ^ invert ) & followsEscape & 0xFFFFu;
+}
+
 }  // namespace
 
 void csvQuotedChunk(
@@ -201,10 +259,8 @@ void csvQuotedChunk(
     const bool entryEscaped, CsvChunkSummary& h0, CsvChunkSummary& h1
 )
 {
-  // The backslash escaped-mask (odd-run) stays scalar; quoting-off never
-  // reaches here (no dirty chunks). Only RFC-4180 takes the SIMD prefix-XOR
-  // path.
-  if ( !d.quoting || d.backslashEsc ) {
+  // quoting-off never reaches here (no dirty chunks); guard defensively.
+  if ( !d.quoting ) {
     csvQuotedWalk( buf, len, d, /*entryInside=*/false, entryEscaped, h0 );
     csvQuotedWalk( buf, len, d, /*entryInside=*/true, entryEscaped, h1 );
     return;
@@ -213,21 +269,34 @@ void csvQuotedChunk(
   const auto* p = reinterpret_cast<const u8*>( buf );
   const u8 delim = static_cast<u8>( d.delim );
   const u8 quote = static_cast<u8>( d.quote );
+  const u8 esc = static_cast<u8>( d.esc );
+  const bool hasEsc = d.backslashEsc;
   const uint8x16_t vq = vdupq_n_u8( quote );
   const uint8x16_t vd = vdupq_n_u8( delim );
   const uint8x16_t vn = vdupq_n_u8( static_cast<u8>( '\n' ) );
+  const uint8x16_t ve = vdupq_n_u8( esc );
 
   CsvBlindState s0;     // entry outside a quote (h0)
   CsvBlindState s1;     // entry inside a quote (h1)
   bool parity = false;  // running entry-outside quote parity across blocks
+  u32 prevEscaped = ( hasEsc && entryEscaped ) ? 1u : 0u;
 
   usize i = 0;
   for ( ; i + 16 <= len; i += 16 ) {
     const uint8x16_t v = vld1q_u8( p + i );
-    const u32 q = movemask16( vceqq_u8( v, vq ) );
-    const u32 dl = movemask16( vceqq_u8( v, vd ) );
-    const u32 nlm = movemask16( vceqq_u8( v, vn ) );
-    const u32 px = prefixXor16( q );
+    u32 q = movemask16( vceqq_u8( v, vq ) );
+    u32 dl = movemask16( vceqq_u8( v, vd ) );
+    u32 nlm = movemask16( vceqq_u8( v, vn ) );
+    if ( hasEsc ) {
+      // Drop escaped quotes/delims/newlines: they are literal content, so they
+      // neither toggle the quote state nor split records.
+      const u32 bs = movemask16( vceqq_u8( v, ve ) );
+      const u32 keep = ~findEscaped16( bs, prevEscaped ) & 0xFFFFu;
+      q &= keep;
+      dl &= keep;
+      nlm &= keep;
+    }
+    const u32 px = prefixXor16( q );  // q is now the real quote toggles
     const u32 qOut =
         ( parity ? ~px : px ) & 0xFFFFu;  // in-quote, entry=outside
     // h0 reads outside (~qOut); h1 enters inside, so Q_in = ~Q_out and the real
@@ -237,11 +306,18 @@ void csvQuotedChunk(
     parity ^= ( __builtin_popcount( q ) & 1 ) != 0;
   }
 
-  bool inQ0 = parity;   // h0's quote state at the tail
-  bool inQ1 = !parity;  // h1's
+  bool inQ0 = parity;            // h0's quote state at the tail
+  bool inQ1 = !parity;           // h1's
+  bool esc0 = prevEscaped != 0;  // escape state at the tail (quote-independent)
+  bool esc1 = esc0;
   for ( ; i < len; ++i ) {
-    quotedStep( p[i], delim, quote, inQ0, s0 );
-    quotedStep( p[i], delim, quote, inQ1, s1 );
+    if ( hasEsc ) {
+      quotedStepEsc( p[i], delim, quote, esc, inQ0, esc0, s0 );
+      quotedStepEsc( p[i], delim, quote, esc, inQ1, esc1, s1 );
+    } else {
+      quotedStep( p[i], delim, quote, inQ0, s0 );
+      quotedStep( p[i], delim, quote, inQ1, s1 );
+    }
   }
 
   csvSummaryFinish( s0, h0 );

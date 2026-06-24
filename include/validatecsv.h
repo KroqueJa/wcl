@@ -63,7 +63,7 @@ enum class CsvMode
 
 // Validate one input (`filename`, empty name = stdin) and report per `mode`.
 // Returns the process exit code (0 valid, 1 invalid).
-int validateCsv(
+i32 validateCsv(
     const char* filename, const CsvDialect& d, CsvMode mode,
     usize bytesPerThread = 64ull * 1024 * 1024
 );
@@ -72,7 +72,7 @@ int validateCsv(
 // using its own internal chunk-parallelism, printing one report line per
 // invalid file in argument order. Returns 1 if any file is invalid, else 0; in
 // Fast mode it returns 1 as soon as a file fails (skipping the rest).
-int validateCsvFiles(
+i32 validateCsvFiles(
     const std::vector<const char*>& files, const CsvDialect& d, CsvMode mode,
     usize bytesPerThread = 64ull * 1024 * 1024
 );
@@ -82,6 +82,6 @@ int validateCsvFiles(
 // proceed. `files` is left empty for the stdin case; `mode` defaults to
 // CsvMode::All and the four mode flags are mutually exclusive.
 std::optional<i32> parseValidateCsvArgs(
-    int argc, char** argv, CsvDialect& d, CsvMode& mode,
+    i32 argc, char** argv, CsvDialect& d, CsvMode& mode,
     std::vector<const char*>& files
 );
