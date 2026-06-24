@@ -173,9 +173,11 @@ void csvWorker( CsvWorkerCtx* ctx )
     buf.resize( len );
     usize got = 0;
     while ( got < len ) {
+      const usize fileOffset = start + got;  // hoisted: clang-tidy flags a
+                                             // widening cast of an arithmetic
+                                             // expression, not of a variable
       const isize n = pread(
-          ctx->fd, buf.data() + got, len - got,
-          static_cast<off_t>( start + got )
+          ctx->fd, buf.data() + got, len - got, static_cast<off_t>( fileOffset )
       );
       if ( n <= 0 ) break;
       got += static_cast<usize>( n );

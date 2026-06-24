@@ -183,7 +183,7 @@ endif()
 set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp src/validatecsv.cpp )
 
 # GCC 13's -fanalyzer mis-models the libstdc++ vector constructor and reports
-# bogus warnings on two of our TUs. Mute exactly those checks, only for
+# bogus warnings on three of our TUs. Mute exactly those checks, only for
 # those TUs, only under GCC. (The options are inert without -fanalyzer;
 # clang would warn about the unknown -Wno- flag, hence the compiler gate.)
 # GCC 16's analyzer no longer trips these (verified locally), but CI is
@@ -201,11 +201,18 @@ set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp src/validat
 #   * -Wanalyzer-null-dereference against the `sizes[i] = stat(...)` write
 #     after `sizes.resize(numFiles)` -- the analyzer doesn't model that
 #     resize initialises the underlying storage.
+# - validatecsv.cpp: -Wanalyzer-null-dereference against `buf[i]` in
+#   collectBadRows. The analyzer reaches it through streamFdToBuffer's
+#   `out.insert(out.end(), ...)` range-insert, which it mis-models so that the
+#   vector's `.data()` looks null while size > 0 -- the same vector bug as
+#   above. collectBadRows only dereferences within [0, len), so it is safe.
 if( CMAKE_CXX_COMPILER_ID STREQUAL "GNU" )
   set_source_files_properties( src/main.cpp PROPERTIES
     COMPILE_OPTIONS "-Wno-analyzer-use-of-uninitialized-value" )
   set_source_files_properties( src/cli.cpp PROPERTIES
     COMPILE_OPTIONS "-Wno-analyzer-null-argument;-Wno-analyzer-possible-null-argument;-Wno-analyzer-null-dereference" )
+  set_source_files_properties( src/validatecsv.cpp PROPERTIES
+    COMPILE_OPTIONS "-Wno-analyzer-null-dereference" )
 endif()
 
 # ---------------------------------------------------------------------------
