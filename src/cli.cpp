@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
+#include <utility>
 #include <vector>
 
 #include "qwc_version.h"
@@ -430,10 +431,9 @@ std::optional<i32> parseValidateCsvArgs(
   return std::nullopt;
 }
 
-Options::~Options()
-{
-  for ( char* p: ownedPaths ) std::free( p );
-}
+// ownedPaths is a vector of MallocOwner (see cli.h), so destroying it frees
+// every walk-allocated path -- nothing to do by hand.
+Options::~Options() = default;
 
 Workload Options::workload() const
 {
@@ -456,31 +456,14 @@ Workload Options::workload() const
 
 namespace {
 
-// Small hand-rolled RAII guards for the heap path and DIR* in walkDir below.
-// Under -fno-exceptions (Release) the would-be-throwing edges in walkDir
-// (std::vector::push_back, recursive walkDir) all degrade to terminate(),
-// so leaks are impossible there. Debug builds keep exceptions on per the
-// binary-size branch's CMake gate, and the previous manual std::free /
-// closedir pattern was exception-unsafe: GCC 16's -fanalyzer correctly
-// flagged that push_back's bad_alloc could unwind out of walkDir leaving
-// `path` and the DIR* leaked (GCC 13 doesn't model this; CI didn't catch
-// it). Two tiny structs in the project style; no <memory> include
-// (unique_ptr<DIR, decltype(&closedir)> works but the deleter-type spelling
-// at every call site doesn't pay rent for two sites).
-struct MallocOwner
-{
-  char* ptr;
-  ~MallocOwner() { std::free( ptr ); }
-  char* release()
-  {
-    char* p = ptr;
-    ptr = nullptr;
-    return p;
-  }
-  MallocOwner( const MallocOwner& ) = delete;
-  MallocOwner& operator=( const MallocOwner& ) = delete;
-};
-
+// Small hand-rolled RAII guard for the DIR* in walkDir below. (The heap-path
+// owner, MallocOwner, lives in cli.h because Options::ownedPaths is a vector of
+// them.) Under -fno-exceptions (Release) the would-be-throwing edges in walkDir
+// (std::vector::push_back, recursive walkDir) all degrade to terminate(), so
+// leaks are impossible there; Debug keeps exceptions on per the binary-size
+// branch's CMake gate, and these RAII guards keep the unwind path leak-free. No
+// <memory> include (unique_ptr<DIR, decltype(&closedir)> works but the
+// deleter-type spelling at the call site doesn't pay rent for one use).
 struct DirCloser
 {
   DIR* d;
@@ -518,7 +501,8 @@ char* joinPath( const char* dir, const char* name )
 // took before this was hand-rolled. Returns false only when `dir` itself
 // cannot be opened; deeper failures just prune that subtree.
 bool walkDir(
-    const char* dir, std::vector<const char*>& out, std::vector<char*>& owned
+    const char* dir, std::vector<const char*>& out,
+    std::vector<MallocOwner>& owned
 )
 {
   DIR* dptr = opendir( dir );
@@ -554,13 +538,12 @@ bool walkDir(
         type = DT_REG;
     }
     if ( type == DT_REG ) {
-      // Take ownership in `owned` first (so a bad_alloc from THIS push leaves
-      // path with its MallocOwner intact and the guard frees it during
-      // unwinding); release the guard so the second push's bad_alloc won't
-      // double-free (owned has it, ~Options will free it via opt.ownedPaths).
-      char* p = path.ptr;
-      owned.push_back( p );
-      path.release();
+      // Move the owner into `owned` first (a bad_alloc from THIS push leaves
+      // `path` un-moved, so its MallocOwner frees it on unwind); then store a
+      // non-owning view in `out`. After the move `path` is emptied, so its
+      // end-of-scope dtor is a no-op and there is no double-free.
+      char* const p = path.ptr;
+      owned.push_back( std::move( path ) );
       out.push_back( p );
       continue;
     }

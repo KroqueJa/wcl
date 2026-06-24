@@ -297,6 +297,12 @@ bool collectBadRows(
     std::vector<usize>& bad
 )
 {
+  // `buf` is a std::vector<char>'s data(); for an empty vector data() may be
+  // null, in which case len is 0 and the loop below is a no-op anyway. The
+  // explicit guard also makes the impossible (null, len>0) state unreachable
+  // for GCC's -fanalyzer, which otherwise mis-models the vector that backs
+  // `buf` (it thinks .data() can be null while .size() > 0) and flags `buf[i]`.
+  if ( buf == nullptr ) return false;
   bool inQuotes = false, escaped = false, recordHasContent = false;
   usize delims = 0, row = 0;
   bool haveExpected = false;
