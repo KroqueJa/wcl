@@ -2201,6 +2201,55 @@ release-parity blocker** — the Phase-1 nibble scan maps to
 `_mm_clmulepi64_si128`. An x86 release must not ship `--validate-csv`
 until the AVX2 kernel lands and passes the same gate.
 
+**Update:** the "Phase-2 dropped as YAGNI" verdict above was **reversed by
+Finding 19** — the SIMD Phase-2 was built and is a 3–4× win on the quoted
+corpora, so the shipping quoted numbers are now ~5–8× vs zsv, not the 1.7–1.8×
+recorded here. This entry's quoted cells are the *scalar-Phase-2* baseline.
+
+## Finding 19 — NEON SIMD Phase-2 (prefix-XOR in-quote mask): 3–4× on quoted CSV
+
+Reverses Finding 18's "Phase-2 dropped as YAGNI". The deferred SIMD Phase-2
+kernel was built and measured against the scalar Phase-2 it replaces (A/B via
+`-DQWC_CSV_NEON_PHASE2=OFF`), Apple Silicon 14-core, 268 MiB corpora,
+best-of-11 wall-clock, vs `zsv check --parser fast` 1.4.3.
+
+| corpus (~268 MiB) | P2-ON | P2-OFF (scalar) | zsv | **ON/OFF** | ON vs zsv |
+| --- | --- | --- | --- | --- | --- |
+| `unquoted` (control, no dirty chunks) | 18.9 ms | 19.0 ms | 233 ms | 1.01× | 12.3× |
+| `sprinkled` (1-of-6 quoted) | 45.6 ms | 136.7 ms | 237 ms | **3.00×** | 5.2× |
+| `heavy` (every field quoted) | 30.6 ms | 131.1 ms | 237 ms | **4.28×** | 7.7× |
+
+**Mechanism.** A dirty chunk's per-byte scalar walk (run twice, once per entry
+hypothesis) is replaced by: three bit-per-byte movemasks (quote / delim /
+newline via the `vaddv` powers-of-two reduction), one **prefix-XOR of the quote
+mask** (`vmull_p64`/PMULL carryless-multiply-by-all-ones — the simdjson idiom;
+a 4-step Kogge-Stone shift-XOR ladder where the crypto extension is absent), and
+two cheap masked segmentations sharing that one construction (`Q_in = ~Q_out`,
+so `real_out = bits & ~Q`, `real_in = bits & Q`). The mask build happens **once**
+for both hypotheses; the running entry-outside quote parity carries across
+16-byte blocks; the < 16-byte tail steps both hypotheses scalar. Doubled-quote
+`""` falls out for free (two adjacent toggles cancel in the prefix-XOR).
+
+**Why heavy beats sprinkled** despite more quotes: heavy masks nearly every
+delimiter/newline (they sit inside quotes), so `segmentBits16` iterates almost
+no real newlines — the segmentation, not the mask build, is the variable cost.
+
+**Scope.** RFC-4180 (doubled-quote) only. The backslash (`--esc`) dialect keeps
+the scalar walk — its `escaped` odd-run mask is the error-prone simdjson
+`find_escaped` and is not exercised by these corpora; SIMD-ising it is a tracked
+follow-up. `unquoted` is unchanged (no chunk is dirty, so Phase-2 never runs):
+the Finding-18 fast path is untouched.
+
+**Lesson recorded.** Finding 18 dropped this as YAGNI from the *parallel scalar
+Phase-2 already beating zsv 1.7×* — true, but "beats the baseline" set the bar
+at the wrong tool. The right question was "is there headroom in our own kernel",
+and there was a 3–4×. Default `QWC_CSV_NEON_PHASE2=ON`; `OFF` keeps the scalar
+A/B baseline. Validation: `qwc_tests` green incl. the 1200-case RFC+backslash
+fuzz routed through the prefix-XOR path and the chunk-seam stress; ASan+UBSan and
+TSan clean. **Port status: AVX2 unchanged** — still the release-parity blocker;
+the prefix-XOR maps to `_mm_clmulepi64_si128` and the bit-per-byte movemask to
+`_mm256_movemask_epi8` when that port is built.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

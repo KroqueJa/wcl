@@ -49,6 +49,12 @@ option( QWC_LTO "Enable IPO/LTO on Release builds" ON )
 # the open dense-2-byte investigation). No effect on the AVX2 build.
 option( QWC_NEON_NIBBLE "NEON words: vshrn nibble-mask movemask (OFF = vaddv fallback)" ON )
 
+# NEON-only: validate-csv Phase 2 (quote-aware) builds the in-quote mask with a
+# bit-per-byte movemask + prefix-XOR (vmull_p64/PMULL or a shift-XOR ladder)
+# instead of the per-byte scalar walk. Default ON. Build -DQWC_CSV_NEON_PHASE2=OFF
+# for the scalar-Phase-2 A/B baseline (see Finding 19). No effect on AVX2.
+option( QWC_CSV_NEON_PHASE2 "NEON validate-csv Phase 2: prefix-XOR in-quote mask (OFF = scalar walk)" ON )
+
 # Output-name suffix so multiple profiles can coexist without clobbering ./qwc.
 # Leave empty for the normal benchmark binary (-> ./qwc). For a sweep, set e.g.
 #   -DQWC_SUFFIX=la2   ->   ./qwc-la2
@@ -207,6 +213,10 @@ function( qwc_configure target )
 
   if( QWC_NEON_NIBBLE )
     target_compile_definitions( ${target} PRIVATE QWC_NEON_NIBBLE=1 )
+  endif()
+
+  if( QWC_CSV_NEON_PHASE2 )
+    target_compile_definitions( ${target} PRIVATE QWC_CSV_NEON_PHASE2=1 )
   endif()
 
   if( QWC_ASAN AND QWC_TSAN )

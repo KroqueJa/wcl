@@ -55,6 +55,11 @@ if( QWC_NEON_NIBBLE )
   target_compile_definitions( qwc_tests PRIVATE QWC_NEON_NIBBLE=1 )
 endif()
 
+# Same for the validate-csv Phase-2 experiment switch (src/validatecsv_neon.cpp).
+if( QWC_CSV_NEON_PHASE2 )
+  target_compile_definitions( qwc_tests PRIVATE QWC_CSV_NEON_PHASE2=1 )
+endif()
+
 add_dependencies( qwc_tests qwc )
 
 include( GoogleTest )
