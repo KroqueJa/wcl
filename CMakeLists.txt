@@ -55,6 +55,12 @@ option( QWC_NEON_NIBBLE "NEON words: vshrn nibble-mask movemask (OFF = vaddv fal
 # for the scalar-Phase-2 A/B baseline (see Finding 19). No effect on AVX2.
 option( QWC_CSV_NEON_PHASE2 "NEON validate-csv Phase 2: prefix-XOR in-quote mask (OFF = scalar walk)" ON )
 
+# x86-only: validate-csv Phase 2 (quote-aware) builds the in-quote mask with a
+# bit-per-byte movemask + prefix-XOR via PCLMUL (unconditional at the
+# x86-64-v3 floor) instead of the per-byte scalar walk. Default ON. Build
+# -DQWC_CSV_AVX2_PHASE2=OFF for the scalar-Phase-2 A/B baseline. No effect on NEON.
+option( QWC_CSV_AVX2_PHASE2 "AVX2 validate-csv Phase 2: prefix-XOR in-quote mask (OFF = scalar walk)" ON )
+
 # Output-name suffix so multiple profiles can coexist without clobbering ./qwc.
 # Leave empty for the normal benchmark binary (-> ./qwc). For a sweep, set e.g.
 #   -DQWC_SUFFIX=la2   ->   ./qwc-la2
@@ -145,7 +151,12 @@ elseif( CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" )
   # Needs GCC 11+ / Clang 12+ for the x86-64-vN names; use -mavx2 on older tools.
   set( QWC_X86_ARCH "x86-64-v3" CACHE STRING
        "x86-64 -march level for the SIMD qwc build (e.g. x86-64-v3, native)" )
-  set( QWC_SIMD_FLAGS -march=${QWC_X86_ARCH} )
+  # PCLMUL is NOT in the psABI x86-64-v2 / v3 levels even though every
+  # AVX2-capable CPU (Haswell+, Bulldozer+) has it. validate-csv's Phase-2
+  # SIMD path (src/validatecsv_avx2.cpp) uses _mm_clmulepi64_si128 for the
+  # prefix-XOR, so enable PCLMUL explicitly on top of -march. Inert on TUs
+  # that don't consume the intrinsic.
+  set( QWC_SIMD_FLAGS -march=${QWC_X86_ARCH} -mpclmul )
 else()
   set( QWC_COUNTLINES src/count_scalar.cpp)
   set( QWC_WORDS src/words_scalar.cpp)
@@ -156,9 +167,11 @@ endif()
 message( STATUS "qwc: building ${QWC_COUNTLINES}, ${QWC_WORDS}, ${QWC_MAXLINE} and ${QWC_CHARS} for ${CMAKE_SYSTEM_PROCESSOR}" )
 
 # The validate-csv per-chunk kernel (`qwc --validate-csv`): NEON on arm64,
-# scalar elsewhere. AVX2 is the flagged release-parity port (not yet started).
+# AVX2 on x86_64, portable scalar otherwise (or when QWC_SCALAR is set).
 if( CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64" AND NOT QWC_SCALAR )
   set( QWC_VALIDATECSV src/validatecsv_neon.cpp )
+elseif( CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT QWC_SCALAR )
+  set( QWC_VALIDATECSV src/validatecsv_avx2.cpp )
 else()
   set( QWC_VALIDATECSV src/validatecsv_scalar.cpp )
 endif()
@@ -217,6 +230,10 @@ function( qwc_configure target )
 
   if( QWC_CSV_NEON_PHASE2 )
     target_compile_definitions( ${target} PRIVATE QWC_CSV_NEON_PHASE2=1 )
+  endif()
+
+  if( QWC_CSV_AVX2_PHASE2 )
+    target_compile_definitions( ${target} PRIVATE QWC_CSV_AVX2_PHASE2=1 )
   endif()
 
   if( QWC_ASAN AND QWC_TSAN )

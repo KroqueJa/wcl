@@ -60,6 +60,11 @@ if( QWC_CSV_NEON_PHASE2 )
   target_compile_definitions( qwc_tests PRIVATE QWC_CSV_NEON_PHASE2=1 )
 endif()
 
+# Same for the AVX2 validate-csv Phase-2 switch (src/validatecsv_avx2.cpp).
+if( QWC_CSV_AVX2_PHASE2 )
+  target_compile_definitions( qwc_tests PRIVATE QWC_CSV_AVX2_PHASE2=1 )
+endif()
+
 add_dependencies( qwc_tests qwc )
 
 include( GoogleTest )

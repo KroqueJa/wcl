@@ -2264,6 +2264,84 @@ blocker, now for both phases *and* both dialects; the prefix-XOR maps to
 `_mm_clmulepi64_si128`, the bit-per-byte movemask to `_mm256_movemask_epi8`,
 and `findEscaped16` ports directly.
 
+## Finding 20 — AVX2 SIMD validate-csv kernel ships (release-parity port)
+
+The AVX2 port of `validate-csv`'s Phase-1 and Phase-2 kernels
+(`src/validatecsv_avx2.cpp`). Bit-identical to NEON / scalar on the
+dual-dialect fuzz, backslash-run stress, chunk-seam stress, and the 600-case
+conformance harness. `_mm256_movemask_epi8` returns the bit-per-byte mask in
+one uop, so NEON's `vshrn` nibble trick is unnecessary on x86. PCLMUL
+(`_mm_clmulepi64_si128`) is the x86 counterpart of NEON's PMULL `vmull_p64`
+for the prefix-XOR; the 32-bit-wide `findEscaped32` is the direct widening of
+NEON's `findEscaped16`. Build-flag note: PCLMUL is **not** in the psABI
+`x86-64-v2` / `v3` levels even though every AVX2-capable CPU has it, so
+`-mpclmul` is added explicitly to `QWC_SIMD_FLAGS` on top of `-march`.
+
+**Box.** Intel Core i7-8700 (Coffee Lake, 6 cores / 12 threads, 3.20 GHz
+base), 31.3 GiB RAM, Arch Linux kernel 7.0.12; GCC 16.1.1, `-O3 -DNDEBUG
+-march=x86-64-v3 -mpclmul`, LTO on. Warm page cache,
+page-cache-resident 268 MiB corpora; `bench-csv.py --runs 11` (median wall).
+
+**Headline (`qwc --validate-csv` vs `zsv check --parser fast` 1.4.3).**
+
+| Shape              | `qwc` ms | `zsv` ms | qwc speedup | Notes                              |
+| ------------------ | -------- | -------- | ----------- | ---------------------------------- |
+| `unquoted`         |     68.8 |    389.9 |       5.66× | Phase 1 only (no dirty chunks)     |
+| `sprinkled`        |     97.0 |    378.9 |       3.90× | mostly Phase 1, occasional Phase 2 |
+| `heavy`            |    119.2 |    329.5 |       2.76× | every chunk Phase 2                |
+| `ragged --fast`    |     69.5 |    394.7 |       5.68× | fail-fast path                     |
+| `ragged` (default) |    902.3 |        — |          —  | inspection re-scan tax (cf. F18)   |
+
+Lower headline ratios than Finding 18 (Apple Silicon 14-core: 12.4× /
+12.4× / 5.2× / 7.7×) — expected: this box has 6 physical cores against
+M-series 14, and qwc's win on `unquoted` / `ragged --fast` is dominated by
+cross-core parallelism over the same per-byte work. The ratios remain
+substantial across all shapes.
+
+**SIMD vs scalar Phase 2 (x86 A/B, `QWC_CSV_AVX2_PHASE2=ON` vs `OFF`).**
+The point of this column is "did the SIMD Phase-2 construction pay off on
+x86 the way it did on NEON?" — Finding 19 measured 3–4× there.
+
+| Shape       | SIMD ms | Scalar ms | SIMD speedup | Notes        |
+| ----------- | ------- | --------- | ------------ | ------------ |
+| `unquoted`  |    68.8 |      69.8 |        1.01× | Phase 1 only, no Phase-2 invocations |
+| `sprinkled` |    97.0 |     407.4 |        4.20× | RFC dialect  |
+| `heavy`     |   119.2 |     444.2 |        3.73× | RFC dialect  |
+| `ragged --fast` | 69.5 |     69.7 |        1.00× | Phase 1 only on the fail-fast path  |
+
+3.7–4.2× on the quoted shapes — matches Finding 19's NEON ratio
+(3–4× on `sprinkled` / `heavy`), confirming the prefix-XOR construction
+carries its own weight on x86 just as on NEON. The unquoted / ragged-fast
+rows show no movement because those workloads never invoke Phase 2 —
+they're a control. **Backslash dialect not benched separately on x86: the
+kernel differs from RFC only by `findEscaped32 + keep` (the same shape
+NEON measured 5.3× / 4.1× on in Finding 19), so the SIMD-vs-scalar ratio
+carries over by construction.**
+
+**Reproduce.**
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target qwc -j
+
+cmake -S . -B build-csv-noavx2 -DCMAKE_BUILD_TYPE=Release -DQWC_CSV_AVX2_PHASE2=OFF
+cmake --build build-csv-noavx2 --target qwc -j
+
+uv run benchmarks/bench-csv.py --qwc ./build/qwc            --zsv zsv --runs 11
+uv run benchmarks/bench-csv.py --qwc ./build-csv-noavx2/qwc --zsv zsv --runs 11
+```
+
+**Validation.** `qwc_tests` 43/43 green on both `QWC_CSV_AVX2_PHASE2=ON`
+and `=OFF` (incl. the 1200-case RFC+backslash fuzz, backslash-run stress,
+chunk-seam stress); `conformance/csv/diff_csv.py --iters 600 --qwc
+./build/qwc --qwc-scalar ./build/qwc-scalar` matched across {C, C.UTF-8}
+× {AVX2, scalar}; ASan+UBSan and TSan clean on the CSV test subset;
+`scripts/check-format.sh` clean.
+
+**Outcome.** AVX2 release-parity port shipped; `qwc --validate-csv` is now
+safe to include in an x86 release tag. **Port status: AVX2 + NEON +
+portable scalar all shipped; no open ports for validate-csv.**
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

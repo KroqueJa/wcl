@@ -104,7 +104,7 @@ def run(binary, data, backslash, locale):
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tf:
         tf.write(data)
         tf.flush()
-        args = [binary, "--validate-csv"]
+        args = [binary, "--validate-csv", "--first"]
         if backslash:
             args.append("--esc=\\")
         args.append(tf.name)
@@ -112,10 +112,13 @@ def run(binary, data, backslash, locale):
         p = subprocess.run(args, capture_output=True, env=env)
     row = None
     if p.returncode == 1:
-        text = (p.stdout + p.stderr).decode("utf-8", "replace")
-        for line in text.splitlines():
-            if line.startswith("bad row:"):
-                row = int(line.split(":")[1])
+        # `--first` prints one line per invalid file: "<name>: <row>"
+        text = (p.stdout + p.stderr).decode("utf-8", "replace").strip()
+        if text and ":" in text:
+            try:
+                row = int(text.rsplit(":", 1)[1].strip())
+            except ValueError:
+                pass
     return p.returncode, row
 
 
