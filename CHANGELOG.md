@@ -6,6 +6,20 @@ not generated from commit messages.
 
 ## [Unreleased]
 
+### Added
+
+- `qwc --validate-csv FILE` (also reads stdin): a mode that proves a CSV file
+  is *rectangular* — every record has the same field count — faster than a full
+  parse. Quoted content is masked (so embedded delimiters and newlines don't
+  split records), with two configurable dialects: RFC-4180 doubled-quote by
+  default, or backslash-escape when `--esc` is given. Options: `--delim`,
+  `--quote` (`--quote=` disables quote handling), `--esc`, and `--fast`. Exits
+  0 when valid; on the first ragged record prints `bad row: N` and exits 1;
+  `--fast` skips the diagnostic and exits 1 immediately. On Apple Silicon it
+  validates a 268 MiB unquoted CSV ~**12× faster** than `zsv check --parser
+  fast`; see `benchmarks/README.md` Finding 18. NEON + portable scalar today;
+  AVX2 is a pending release-parity port.
+
 ### Performance
 
 - NEON (Apple Silicon) word counting (`-w`, `-l -w`, default `-lwc`) is

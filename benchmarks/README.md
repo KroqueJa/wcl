@@ -2140,6 +2140,65 @@ question and a different ticket.
 - **Finding 8** — the original `-l -w` fusion null. Stays dropped;
   Finding 17 didn't open a fusion rescue.
 
+## Finding 18 — `qwc --validate-csv` beats `zsv check --parser fast`
+
+New `qwc --validate-csv` command proving CSV rectangularity (constant
+field count per record, quoted content masked). Benchmarked against
+`zsv check --parser fast` (zsv 1.4.3, the branchless-SIMD NEON parser),
+which performs the same column-count anomaly check. Apple Silicon
+(14 cores), four deterministic ~268 MiB corpora from
+`benchmarks/gen-csv.py`, warm page cache, best-of-7 wall-clock.
+
+| corpus (~268 MiB) | qwc | zsv | speedup |
+| --- | --- | --- | --- |
+| `unquoted` (valid, no quotes) | 19 ms | 238 ms | **12.4×** |
+| `sprinkled` (1-of-6 quoted, embedded `,`/`\n`) | 136 ms | 235 ms | 1.7× |
+| `heavy` (every field quoted) | 131 ms | 231 ms | 1.8× |
+| `ragged` (`--fast`, bad last row) | 19 ms | 233 ms | **12.4×** |
+| `ragged` (default, names the row) | 273 ms | 233 ms | 0.86× |
+
+**Headline: 12.4× on the unquoted case** — the dominant real-world shape
+and the Phase-1-only fast path (NEON `vshrn` nibble-mask scan + parallel
+chunking; no two-assumption work because no chunk is "dirty"). zsv is
+single-threaded; qwc's win is SIMD-per-chunk **and** 14-way parallelism,
+and the validator does far less than zsv's full parse.
+
+**Quoted corpora win 1.7–1.8× with the Phase-2 walk still scalar.** Only
+quote-bearing chunks take the two-assumption quote-aware pass, and even
+run scalar-per-chunk that pass is parallel across chunks, which already
+beats single-threaded zsv. This measurement is why **the NEON Phase-2
+kernel was dropped as YAGNI** (the design spec's `vmull_p64` prefix-XOR
+Phase-2): there is no zsv deficit to close on the quoted path. A NEON
+Phase-2 would push the quoted multiplier higher but is not needed to win,
+and the error-prone backslash escaped-mask SIMD is not worth the risk
+absent a measured target. Spun off as a `## Next` follow-up.
+
+**The one loss is by design.** Default-mode `ragged` (0.86×) is slower
+than zsv only because, after the parallel pass detects the violation, the
+inspection step re-reads the file sequentially to pinpoint the exact bad
+row — and the bad row here is the very last one, so it scans ~the whole
+file. `--fast` skips inspection and `_Exit(1)`s on first detection,
+restoring 12.4×. (A seeded re-scan from the offending chunk instead of
+from byte 0 would bound this; deferred — failure-with-diagnosis is the
+exceptional path and `--fast` already covers the latency-sensitive case.)
+
+Row-number convention: qwc's `bad row: N` is 1-based over logical records
+**including the header** (header = row 1), so on the `ragged` corpus qwc
+reports row 4467653 where zsv reports "Row 4467652" (zsv excludes the
+header from its count). Both name the same physical line.
+
+**Validation.** `qwc_tests` green incl. a 1200-case dual-dialect fuzz vs
+an independent oracle and byte-by-byte chunk-seam stress; ASan+UBSan and
+TSan clean on the threaded path; `conformance/csv/diff_csv.py` 600 cases
+× {NEON, scalar} binaries × {C, C.UTF-8} all matched (validation is
+byte-oriented, so the locale is provably irrelevant).
+
+**Port status:** NEON + scalar reference shipped. **AVX2 is the flagged
+release-parity blocker** — the Phase-1 nibble scan maps to
+`_mm256_movemask_epi8` and (if Phase-2 is ever built) the prefix-XOR to
+`_mm_clmulepi64_si128`. An x86 release must not ship `--validate-csv`
+until the AVX2 kernel lands and passes the same gate.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

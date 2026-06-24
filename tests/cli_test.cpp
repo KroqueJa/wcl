@@ -1158,3 +1158,78 @@ TEST( VersionFlag, IgnoresTrailingArguments )
   EXPECT_EQ( r.exitCode, 0 );
   EXPECT_EQ( r.out.rfind( "qwc ", 0 ), 0u );
 }
+
+// ---------------------------------------------------------------------------
+// --validate-csv: a mode flag (not composable with the counting columns) that
+// proves a CSV is rectangular. Exit 0 + no output when valid; exit 1 and
+// `bad row: N` on stderr when ragged; --fast exits 1 with no diagnostic.
+// ---------------------------------------------------------------------------
+TEST( ValidateCsvCli, RectangularExitsZeroNoOutput )
+{
+  std::string create = "printf '%b' 'a,b,c\\n1,2,3\\n' > /tmp/qwc_v_ok.csv && ";
+  CmdResult r =
+      run( create + kBin +
+           " --validate-csv /tmp/qwc_v_ok.csv; rm -f /tmp/qwc_v_ok.csv" );
+  EXPECT_EQ( r.exitCode, 0 );
+  EXPECT_EQ( r.out, "" );
+}
+
+TEST( ValidateCsvCli, RaggedPrintsRowAndExitsOne )
+{
+  // Capture qwc's own exit code (ec) before the cleanup rm, which would
+  // otherwise mask the non-zero status the way `cmd; rm` does.
+  std::string create = "printf '%b' 'a,b,c\\n1,2\\n' > /tmp/qwc_v_bad.csv && ";
+  CmdResult r =
+      run( create + kBin +
+           " --validate-csv /tmp/qwc_v_bad.csv 2>&1; ec=$?; "
+           "rm -f /tmp/qwc_v_bad.csv; exit $ec" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_NE( r.out.find( "bad row: 2" ), std::string::npos );
+}
+
+TEST( ValidateCsvCli, FastExitsOneNoDiagnostic )
+{
+  std::string create = "printf '%b' 'a,b,c\\n1,2\\n' > /tmp/qwc_v_f.csv && ";
+  CmdResult r =
+      run( create + kBin +
+           " --validate-csv --fast /tmp/qwc_v_f.csv 2>&1; ec=$?; "
+           "rm -f /tmp/qwc_v_f.csv; exit $ec" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_EQ( r.out.find( "bad row" ), std::string::npos );
+}
+
+TEST( ValidateCsvCli, CustomDelimiter )
+{
+  std::string create = "printf '%b' 'a;b\\n1;2\\n' > /tmp/qwc_v_d.csv && ";
+  CmdResult r = run(
+      create + kBin +
+      " --validate-csv --delim=';' /tmp/qwc_v_d.csv; rm -f /tmp/qwc_v_d.csv"
+  );
+  EXPECT_EQ( r.exitCode, 0 );
+}
+
+TEST( ValidateCsvCli, RejectsCombiningWithCountFlag )
+{
+  CmdResult r = run( kBin + " --validate-csv -l </dev/null 2>/dev/null" );
+  EXPECT_EQ( r.exitCode, 1 );
+}
+
+TEST( ValidateCsvCli, RejectsDelimEqualsQuote )
+{
+  CmdResult r =
+      run( kBin + " --validate-csv --quote=, </dev/null 2>/dev/null" );
+  EXPECT_EQ( r.exitCode, 1 );
+}
+
+TEST( ValidateCsvCli, StdinRectangular )
+{
+  CmdResult r = run( piped( "a,b\\n1,2\\n", "--validate-csv" ) );
+  EXPECT_EQ( r.exitCode, 0 );
+}
+
+TEST( ValidateCsvCli, StdinRaggedRow )
+{
+  CmdResult r = run( piped( "a,b\\n1,2,3\\n", "--validate-csv" ) + " 2>&1" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_NE( r.out.find( "bad row: 2" ), std::string::npos );
+}

@@ -12,6 +12,7 @@
 #include "maxlinelen.h"
 #include "processfile.h"
 #include "typedef.h"
+#include "validatecsv.h"
 #include "words.h"
 
 namespace qwctest {
@@ -227,6 +228,60 @@ inline usize refMaxLineLen( const std::string& s )
     }
   }
   return best;
+}
+
+// Independent reference for validateCsvBuffer. One linear walk with explicit
+// state, deliberately structured unlike the production scan, so a shared bug is
+// unlikely. A record completes at every unquoted '\n'; the first record's
+// delimiter count is the reference ("expected"); rectangularity means every
+// record has that same count. Backslash (when enabled) escapes the next byte
+// everywhere; quote toggles in/out; a quote byte and an escaped byte are
+// content. CRLF: '\r' is ordinary content. A quote open at EOF is an error.
+inline CsvVerdict refValidateCsv( const std::string& s, const CsvDialect& d )
+{
+  bool inQuotes = false, escaped = false, recordHasContent = false;
+  usize delims = 0, row = 0;
+  long expected = -1;  // -1 == unset
+  for ( usize i = 0; i < s.size(); ++i ) {
+    const auto c = static_cast<unsigned char>( s[i] );
+    if ( escaped ) {
+      escaped = false;
+      recordHasContent = true;
+      continue;
+    }
+    if ( d.quoting && d.backslashEsc &&
+         c == static_cast<unsigned char>( d.esc ) ) {
+      escaped = true;
+      recordHasContent = true;
+      continue;
+    }
+    if ( d.quoting && c == static_cast<unsigned char>( d.quote ) ) {
+      inQuotes = !inQuotes;
+      recordHasContent = true;
+      continue;
+    }
+    if ( !inQuotes && c == static_cast<unsigned char>( d.delim ) ) {
+      ++delims;
+      recordHasContent = true;
+      continue;
+    }
+    if ( !inQuotes && c == '\n' ) {
+      if ( expected < 0 )
+        expected = static_cast<long>( delims );
+      else if ( static_cast<long>( delims ) != expected )
+        return { false, row + 1 };
+      ++row;
+      delims = 0;
+      recordHasContent = false;
+      continue;
+    }
+    recordHasContent = true;
+  }
+  if ( inQuotes ) return { false, row + 1 };
+  if ( recordHasContent && expected >= 0 &&
+       static_cast<long>( delims ) != expected )
+    return { false, row + 1 };
+  return { true, 0 };
 }
 
 // Run `maxLineLen` over a whole string in one shot. The answer is the longest

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "qwc_version.h"
+#include "validatecsv.h"
 
 void printHelp()
 {
@@ -117,6 +118,17 @@ void printHelp()
       "                        dev builds show the git commit they were\n"
       "                        built from.\n"
       "  -h, --help            Show this message and exit.\n"
+      "\n"
+      "Modes (not combinable with the count flags above):\n"
+      "      --validate-csv    Prove a CSV file is rectangular (every record "
+      "has the\n"
+      "                        same field count), faster than a full parse. "
+      "Quoted\n"
+      "                        content is masked, so embedded delimiters and\n"
+      "                        newlines don't split records. Run\n"
+      "                        `qwc --validate-csv --help` for its options "
+      "(--delim,\n"
+      "                        --quote, --esc, --fast).\n"
       "\n"
       "Output:\n"
       "  qwc matches wc's layout so it can stand in for it: each file "
@@ -296,6 +308,88 @@ std::optional<i32> parseArgs( i32 argc, char** argv, Options& opt )
   }
 
   for ( i32 i = fileStart; i < argc; ++i ) opt.files.push_back( argv[i] );
+  return std::nullopt;
+}
+
+// Report a validate-csv usage error and return the exit code (1). A free
+// function rather than a lambda (project convention), shared by the option
+// checks below.
+static std::optional<i32> csvUsageErr( const char* msg )
+{
+  std::fprintf( stderr, "Error: %s\n", msg );
+  return 1;
+}
+
+std::optional<i32> parseValidateCsvArgs(
+    int argc, char** argv, CsvDialect& d, bool& fast, const char*& filename
+)
+{
+  fast = false;
+  filename = nullptr;
+  // argv[0] is the program, argv[1] is "--validate-csv"; parse from argv[2].
+  for ( int i = 2; i < argc; ++i ) {
+    const char* a = argv[i];
+    if ( std::strncmp( a, "--delim=", 8 ) == 0 ) {
+      if ( a[8] == '\0' || a[9] != '\0' )
+        return csvUsageErr( "--delim needs exactly one byte" );
+      d.delim = a[8];
+    } else if ( std::strncmp( a, "--quote=", 8 ) == 0 ) {
+      if ( a[8] == '\0' )
+        d.quoting = false;  // --quote= disables quote handling entirely
+      else if ( a[9] != '\0' )
+        return csvUsageErr( "--quote needs exactly one byte" );
+      else
+        d.quote = a[8];
+    } else if ( std::strncmp( a, "--esc=", 6 ) == 0 ) {
+      if ( a[6] == '\0' || a[7] != '\0' )
+        return csvUsageErr( "--esc needs exactly one byte" );
+      d.esc = a[6];
+      d.backslashEsc = true;
+    } else if ( std::strcmp( a, "--fast" ) == 0 ) {
+      fast = true;
+    } else if ( std::strcmp( a, "-h" ) == 0 ||
+                std::strcmp( a, "--help" ) == 0 ) {
+      std::fputs(
+          "Usage: qwc --validate-csv [--delim=,] [--quote=\"] [--esc=\\] "
+          "[--fast] FILE\n"
+          "\n"
+          "Prove a CSV file is rectangular: every record has the same number "
+          "of\n"
+          "fields. Quoted content (and, with --esc, backslash-escaped bytes) "
+          "is\n"
+          "masked, so embedded delimiters and newlines do not split records. "
+          "Reads\n"
+          "standard input when no FILE is given. Exits 0 when valid; on the "
+          "first\n"
+          "ragged record it prints \"bad row: N\" and exits 1. --fast skips "
+          "the\n"
+          "diagnostic and exits 1 immediately.\n",
+          stdout
+      );
+      return 0;
+    } else if ( a[0] == '-' && a[1] != '\0' ) {
+      std::fprintf( stderr, "Error: unknown validate-csv flag %s\n", a );
+      return 1;
+    } else {
+      if ( filename ) return csvUsageErr( "validate-csv takes a single file" );
+      filename = a;
+    }
+  }
+
+  // The delimiter, quote, escape and newline must be distinct so each byte has
+  // one meaning. With quoting disabled only the delimiter/newline clash
+  // matters.
+  if ( d.quoting ) {
+    if ( d.delim == d.quote || d.delim == '\n' || d.quote == '\n' )
+      return csvUsageErr( "--delim, --quote and newline must be distinct" );
+    if ( d.backslashEsc &&
+         ( d.esc == d.delim || d.esc == d.quote || d.esc == '\n' ) )
+      return csvUsageErr(
+          "--esc must differ from --delim, --quote and newline"
+      );
+  } else if ( d.delim == '\n' ) {
+    return csvUsageErr( "--delim must not be newline" );
+  }
   return std::nullopt;
 }
 

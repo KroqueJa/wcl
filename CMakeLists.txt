@@ -149,10 +149,19 @@ else()
 endif()
 message( STATUS "qwc: building ${QWC_COUNTLINES}, ${QWC_WORDS}, ${QWC_MAXLINE} and ${QWC_CHARS} for ${CMAKE_SYSTEM_PROCESSOR}" )
 
+# The validate-csv per-chunk kernel (`qwc --validate-csv`): NEON on arm64,
+# scalar elsewhere. AVX2 is the flagged release-parity port (not yet started).
+if( CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64" AND NOT QWC_SCALAR )
+  set( QWC_VALIDATECSV src/validatecsv_neon.cpp )
+else()
+  set( QWC_VALIDATECSV src/validatecsv_scalar.cpp )
+endif()
+
 # Every counting algorithm (countlines, words, max-line-length, chars) is
 # arch-dispatched above (SIMD where available, scalar otherwise) and added to
 # each target explicitly, so the common set is just the frontend and dispatcher.
-set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp )
+# validatecsv.cpp (the always-linked sequential validator + driver) joins them.
+set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp src/validatecsv.cpp )
 
 # GCC 13's -fanalyzer mis-models the libstdc++ vector constructor and reports
 # bogus warnings on two of our TUs. Mute exactly those checks, only for
@@ -251,7 +260,7 @@ else()
   set( QWC_OUTPUT_NAME "qwc-${QWC_SUFFIX}" )
 endif()
 
-add_executable( qwc ${QWC_COMMON_SOURCES} ${QWC_COUNTLINES} ${QWC_WORDS} ${QWC_MAXLINE} ${QWC_CHARS} )
+add_executable( qwc ${QWC_COMMON_SOURCES} ${QWC_COUNTLINES} ${QWC_WORDS} ${QWC_MAXLINE} ${QWC_CHARS} ${QWC_VALIDATECSV} )
 set_target_properties( qwc PROPERTIES OUTPUT_NAME ${QWC_OUTPUT_NAME} )
 target_compile_options( qwc PRIVATE ${QWC_SIMD_FLAGS} )
 # Binary-size flags only apply to the Linux + glibc + static-libstdc++ link
@@ -309,7 +318,7 @@ message( STATUS "qwc: output binary -> ${CMAKE_SOURCE_DIR}/${QWC_OUTPUT_NAME}" )
 # ./qwc-scalar.
 add_executable( qwc-scalar EXCLUDE_FROM_ALL
   ${QWC_COMMON_SOURCES} src/count_scalar.cpp src/words_scalar.cpp
-  src/maxlinelen_scalar.cpp src/chars_scalar.cpp )
+  src/maxlinelen_scalar.cpp src/chars_scalar.cpp src/validatecsv_scalar.cpp )
 qwc_configure( qwc-scalar )
 # Build the scalar baseline at the SAME -march as the SIMD qwc (QWC_SIMD_FLAGS).
 # This isolates the variable under test -- hand-written SIMD vs the compiler's

@@ -32,11 +32,14 @@ add_executable( qwc_tests
   maxlinelen_test.cpp
   processfile_test.cpp
   cli_test.cpp
+  validatecsv_test.cpp
   ${CMAKE_SOURCE_DIR}/src/processfile.cpp
+  ${CMAKE_SOURCE_DIR}/src/validatecsv.cpp
   ${CMAKE_SOURCE_DIR}/${QWC_WORDS}
   ${CMAKE_SOURCE_DIR}/${QWC_CHARS}
   ${CMAKE_SOURCE_DIR}/${QWC_MAXLINE}
   ${CMAKE_SOURCE_DIR}/${QWC_COUNTLINES}
+  ${CMAKE_SOURCE_DIR}/${QWC_VALIDATECSV}
 )
 target_include_directories( qwc_tests PRIVATE ${CMAKE_SOURCE_DIR}/include )
 target_compile_options( qwc_tests PRIVATE ${QWC_SIMD_FLAGS} )

@@ -14,6 +14,7 @@
 
 #include "cli.h"
 #include "processfile.h"
+#include "validatecsv.h"
 
 // The C++ runtime overrides below are Linux-only AND Release-only.
 //
@@ -266,6 +267,20 @@ static std::vector<Counts> mapFiles(
 
 i32 main( i32 argc, char** argv )
 {
+  // validate-csv is a mode, not a counting column, so it leads and routes to
+  // its own parser + driver before the counting path. One strcmp that
+  // short-circuits on the first byte for the common `qwc onefile` case, so the
+  // bare-file fast path below stays untouched.
+  if ( argc >= 2 && std::strcmp( argv[1], "--validate-csv" ) == 0 ) {
+    CsvDialect dialect;
+    bool fast = false;
+    const char* filename = nullptr;
+    if ( const std::optional<i32> rc =
+             parseValidateCsvArgs( argc, argv, dialect, fast, filename ) )
+      return *rc;
+    return validateCsv( filename ? filename : "", dialect, fast );
+  }
+
   Options opt;
 
   // Pre-parse fast paths: bare `qwc` (stdin) and `qwc onefile` (a single
