@@ -3,6 +3,7 @@
  */
 #pragma once
 #include <optional>
+#include <vector>
 
 #include "typedef.h"
 
@@ -60,17 +61,27 @@ enum class CsvMode
   All     // print "<name>: r1,r2,..." (every ragged row, capped) -- the default
 };
 
-// CLI entry: validate `filename` (empty name = stdin) and report per `mode`.
+// Validate one input (`filename`, empty name = stdin) and report per `mode`.
 // Returns the process exit code (0 valid, 1 invalid).
 int validateCsv(
     const char* filename, const CsvDialect& d, CsvMode mode,
     usize bytesPerThread = 64ull * 1024 * 1024
 );
 
-// Parse the argv tail after `--validate-csv` into `d`/`mode`/`filename`.
-// Returns a process exit code to stop (usage error or --help), or std::nullopt
-// to proceed. `filename` is left null for the stdin case; `mode` defaults to
+// Validate every file in `files` (empty = standard input) per `mode`, each
+// using its own internal chunk-parallelism, printing one report line per
+// invalid file in argument order. Returns 1 if any file is invalid, else 0; in
+// Fast mode it returns 1 as soon as a file fails (skipping the rest).
+int validateCsvFiles(
+    const std::vector<const char*>& files, const CsvDialect& d, CsvMode mode,
+    usize bytesPerThread = 64ull * 1024 * 1024
+);
+
+// Parse the argv tail after `--validate-csv` into `d`/`mode`/`files`. Returns a
+// process exit code to stop (usage error or --help), or std::nullopt to
+// proceed. `files` is left empty for the stdin case; `mode` defaults to
 // CsvMode::All and the four mode flags are mutually exclusive.
 std::optional<i32> parseValidateCsvArgs(
-    int argc, char** argv, CsvDialect& d, CsvMode& mode, const char*& filename
+    int argc, char** argv, CsvDialect& d, CsvMode& mode,
+    std::vector<const char*>& files
 );

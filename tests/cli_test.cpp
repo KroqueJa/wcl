@@ -1280,3 +1280,70 @@ TEST( ValidateCsvCli, StdinRaggedRow )
   EXPECT_EQ( r.exitCode, 1 );
   EXPECT_EQ( r.out, "-: 2\n" );
 }
+
+// ---------------------------------------------------------------------------
+// Multiple files / globs: one report line per INVALID file, in argument order;
+// valid files stay silent; exit 1 if any file is invalid.
+// ---------------------------------------------------------------------------
+namespace {
+std::string makeCsvTriple( const std::string& dir )
+{
+  std::string cmd = "rm -rf " + dir + " && mkdir -p " + dir +
+                    " && printf '%b' 'a,b,c\\n1,2,3\\n'     > " + dir +
+                    "/a_ok.csv"
+                    " && printf '%b' 'a,b\\n1,2,3\\n4,5\\n' > " +
+                    dir +
+                    "/b_bad.csv"
+                    " && printf '%b' 'x,y,z\\n1,2\\n'       > " +
+                    dir + "/c_bad.csv";
+  std::system( cmd.c_str() );
+  return dir;
+}
+}  // namespace
+
+TEST( ValidateCsvCli, MultipleFilesReportEachBadInOrder )
+{
+  const std::string dir = makeCsvTriple( "/tmp/qwc_vmulti" );
+  CmdResult r =
+      run( kBin + " --validate-csv " + dir + "/a_ok.csv " + dir +
+           "/b_bad.csv " + dir + "/c_bad.csv; ec=$?; rm -rf " + dir +
+           "; exit $ec" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_EQ(
+      r.out, dir + "/b_bad.csv: 2\n" + dir + "/c_bad.csv: 2\n"
+  );  // a_ok.csv is silent; order is the argument order
+}
+
+TEST( ValidateCsvCli, ListModeAcrossGlobNamesOnly )
+{
+  const std::string dir = makeCsvTriple( "/tmp/qwc_vglob" );
+  // The shell expands the glob (alphabetical), so only the two bad names print.
+  CmdResult r =
+      run( kBin + " --validate-csv --list " + dir + "/*.csv; ec=$?; rm -rf " +
+           dir + "; exit $ec" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_EQ( r.out, dir + "/b_bad.csv\n" + dir + "/c_bad.csv\n" );
+}
+
+TEST( ValidateCsvCli, AllValidMultiplePrintsNothing )
+{
+  std::string setup =
+      "printf '%b' 'a,b\\n1,2\\n' > /tmp/qwc_vm_a.csv && "
+      "printf '%b' 'x,y\\n3,4\\n' > /tmp/qwc_vm_b.csv && ";
+  CmdResult r =
+      run( setup + kBin +
+           " --validate-csv /tmp/qwc_vm_a.csv /tmp/qwc_vm_b.csv; "
+           "ec=$?; rm -f /tmp/qwc_vm_a.csv /tmp/qwc_vm_b.csv; exit $ec" );
+  EXPECT_EQ( r.exitCode, 0 );
+  EXPECT_EQ( r.out, "" );
+}
+
+TEST( ValidateCsvCli, FastBailsOnFirstBadFile )
+{
+  const std::string dir = makeCsvTriple( "/tmp/qwc_vfast" );
+  CmdResult r =
+      run( kBin + " --validate-csv --fast " + dir + "/b_bad.csv " + dir +
+           "/c_bad.csv 2>&1; ec=$?; rm -rf " + dir + "; exit $ec" );
+  EXPECT_EQ( r.exitCode, 1 );
+  EXPECT_EQ( r.out, "" );
+}

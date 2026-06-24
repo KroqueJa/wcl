@@ -11,7 +11,6 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -398,16 +397,19 @@ int reportRows(
   std::vector<usize> bad;
   const bool truncated = collectBadRows( buf.data(), buf.size(), d, cap, bad );
   if ( bad.empty() ) return 0;
-  std::string line( name );
-  line += ": ";
+  // Emit "<name>: r1,r2,...\n" straight to the (buffered) stream -- this is the
+  // failure path, so a few fputc/fprintf per number costs nothing, and it keeps
+  // the TU free of <string> (matching qwc's lean static-link posture). fputs on
+  // the name avoids treating it as a format string.
+  std::fputs( name, stdout );
+  std::fputs( ": ", stdout );
   for ( usize i = 0; i < bad.size(); ++i ) {
-    if ( i ) line += ',';
-    line += std::to_string( bad[i] );
+    if ( i ) std::fputc( ',', stdout );
+    std::fprintf( stdout, "%zu", bad[i] );  // usize == size_t
   }
   // Only --all signals "there were more"; --first inherently lists just one.
-  if ( truncated && mode == CsvMode::All ) line += ",...";
-  line += '\n';
-  std::fputs( line.c_str(), stdout );
+  if ( truncated && mode == CsvMode::All ) std::fputs( ",...", stdout );
+  std::fputc( '\n', stdout );
   return 1;
 }
 
@@ -490,4 +492,25 @@ int validateCsv(
     return 1;
   }
   return reportRows( name, mode, buf, d );
+}
+
+int validateCsvFiles(
+    const std::vector<const char*>& files, const CsvDialect& d, CsvMode mode,
+    usize bytesPerThread
+)
+{
+  if ( files.empty() )  // no file arguments: validate standard input
+    return validateCsv( "", d, mode, bytesPerThread );
+
+  // Validate each file in argument order, each with its own internal
+  // chunk-parallelism; validateCsv prints that file's report (nothing when it
+  // is valid). Exit 1 if any file fails; --fast bails on the first failure.
+  int rc = 0;
+  for ( const char* f: files ) {
+    if ( validateCsv( f, d, mode, bytesPerThread ) != 0 ) {
+      rc = 1;
+      if ( mode == CsvMode::Fast ) return 1;
+    }
+  }
+  return rc;
 }

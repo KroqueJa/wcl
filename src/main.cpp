@@ -274,11 +274,11 @@ i32 main( i32 argc, char** argv )
   if ( argc >= 2 && std::strcmp( argv[1], "--validate-csv" ) == 0 ) {
     CsvDialect dialect;
     CsvMode mode = CsvMode::All;
-    const char* filename = nullptr;
+    std::vector<const char*> files;
     if ( const std::optional<i32> rc =
-             parseValidateCsvArgs( argc, argv, dialect, mode, filename ) )
+             parseValidateCsvArgs( argc, argv, dialect, mode, files ) )
       return *rc;
-    return validateCsv( filename ? filename : "", dialect, mode );
+    return validateCsvFiles( files, dialect, mode );
   }
 
   Options opt;

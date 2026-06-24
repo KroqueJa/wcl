@@ -336,12 +336,12 @@ static std::optional<i32> setMode( CsvMode m, CsvMode& mode, bool& seen )
 }
 
 std::optional<i32> parseValidateCsvArgs(
-    int argc, char** argv, CsvDialect& d, CsvMode& mode, const char*& filename
+    int argc, char** argv, CsvDialect& d, CsvMode& mode,
+    std::vector<const char*>& files
 )
 {
   mode = CsvMode::All;  // default: list every ragged row
   bool modeSeen = false;
-  filename = nullptr;
   // argv[0] is the program, argv[1] is "--validate-csv"; parse from argv[2].
   for ( int i = 2; i < argc; ++i ) {
     const char* a = argv[i];
@@ -381,18 +381,21 @@ std::optional<i32> parseValidateCsvArgs(
                 std::strcmp( a, "--help" ) == 0 ) {
       std::fputs(
           "Usage: qwc --validate-csv [--delim=,] [--quote=\"] [--esc=\\]\n"
-          "                          [--fast|--list|--first|--all] FILE\n"
+          "                          [--fast|--list|--first|--all] [FILE ...]\n"
           "\n"
-          "Prove a CSV file is rectangular: every record has the same number "
+          "Prove CSV files are rectangular: every record has the same number "
           "of\n"
           "fields. Quoted content (and, with --esc, backslash-escaped bytes) "
           "is\n"
           "masked, so embedded delimiters and newlines do not split records. "
           "Reads\n"
-          "standard input when no FILE is given. Exits 0 when valid (printing\n"
-          "nothing), 1 when invalid. The report (on stdout, prefixed by the "
-          "file\n"
-          "name, or `-` for stdin) is selected by:\n"
+          "standard input when no FILE is given; with several files each is\n"
+          "validated independently and only the invalid ones are reported, "
+          "one\n"
+          "line each in argument order. Exits 0 when every input is valid\n"
+          "(printing nothing), 1 when any is invalid. The per-file report (on\n"
+          "stdout, prefixed by the file name, or `-` for stdin) is selected "
+          "by:\n"
           "  --all    <name>: r1,r2,...  every ragged row, comma-separated "
           "(default)\n"
           "  --first  <name>: r1         just the first ragged row\n"
@@ -406,8 +409,7 @@ std::optional<i32> parseValidateCsvArgs(
       std::fprintf( stderr, "Error: unknown validate-csv flag %s\n", a );
       return 1;
     } else {
-      if ( filename ) return csvUsageErr( "validate-csv takes a single file" );
-      filename = a;
+      files.push_back( a );  // a file argument (the shell expands any glob)
     }
   }
 

@@ -8,9 +8,12 @@ not generated from commit messages.
 
 ### Added
 
-- `qwc --validate-csv FILE` (also reads stdin): a mode that proves a CSV file
-  is *rectangular* — every record has the same field count — faster than a full
-  parse. Quoted content is masked (so embedded delimiters and newlines don't
+- `qwc --validate-csv [FILE ...]` (also reads stdin): a mode that proves CSV
+  files are *rectangular* — every record has the same field count — faster than
+  a full parse. Several files (e.g. a shell glob) are each validated
+  independently, with one report line per invalid file in argument order
+  (valid files stay silent), so `qwc --validate-csv --list *.csv` lists exactly
+  the broken ones; the exit code is 1 if any file is invalid. Quoted content is masked (so embedded delimiters and newlines don't
   split records), with two configurable dialects: RFC-4180 doubled-quote by
   default, or backslash-escape when `--esc` is given. Dialect options: `--delim`,
   `--quote` (`--quote=` disables quote handling), `--esc`. A valid file prints
