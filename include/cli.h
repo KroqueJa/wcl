@@ -4,38 +4,11 @@
 #pragma once
 
 #include <array>
-#include <cstdlib>
 #include <optional>
 #include <vector>
 
 #include "processfile.h"
 #include "typedef.h"
-
-// RAII owner for a malloc'd buffer -- the heap paths the --recursive walk
-// allocates. Movable (the moved-from owner is emptied) so it can live in a
-// std::vector, which makes the ownership visible to static analysis: GCC's
-// -fanalyzer can follow the malloc into the owning vector and no longer reports
-// a (false) leak, where the previous raw-pointer-plus-manual-free model
-// defeated it. Copy is deleted so a path is never double-freed.
-struct MallocOwner
-{
-  char* ptr = nullptr;
-  MallocOwner() = default;
-  explicit MallocOwner( char* p ) : ptr( p ) {}
-  ~MallocOwner() { std::free( ptr ); }
-  MallocOwner( MallocOwner&& o ) noexcept : ptr( o.ptr ) { o.ptr = nullptr; }
-  MallocOwner& operator=( MallocOwner&& o ) noexcept
-  {
-    if ( this != &o ) {
-      std::free( ptr );
-      ptr = o.ptr;
-      o.ptr = nullptr;
-    }
-    return *this;
-  }
-  MallocOwner( const MallocOwner& ) = delete;
-  MallocOwner& operator=( const MallocOwner& ) = delete;
-};
 
 // How to order the per-file output list. The chosen key governs both the
 // display order and which files --top keeps; ordering is ascending by default
@@ -78,14 +51,12 @@ struct Options
   // or at heap paths allocated by the --recursive walk; `files` itself owns
   // nothing and never copies.
   std::vector<const char*> files;
-  // The owning side of the walk-allocated entries in `files`: each path lives
-  // in a MallocOwner here, freed when this vector is destroyed. Kept separate
-  // from `files` because the argv pointers mixed into `files` must never be
-  // freed. (Without this the paths would still be reachable right up to the end
-  // of main
-  // -- but LeakSanitizer scans after main's locals are gone, and the analysis
-  // CI runs with detect_leaks on.)
-  std::vector<MallocOwner> ownedPaths;
+  // The owning side of the walk-allocated entries in `files`, freed by the
+  // destructor. Kept separately because the argv pointers mixed into `files`
+  // must never be freed. (Without this the paths would still be reachable
+  // right up to the end of main -- but LeakSanitizer scans after main's
+  // locals are gone, and the analysis CI runs with detect_leaks on.)
+  std::vector<char*> ownedPaths;
 
   Options() = default;
   Options( const Options& ) = delete;

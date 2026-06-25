@@ -180,7 +180,7 @@ endif()
 # arch-dispatched above (SIMD where available, scalar otherwise) and added to
 # each target explicitly, so the common set is just the frontend and dispatcher.
 # validatecsv.cpp (the always-linked sequential validator + driver) joins them.
-set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp src/validatecsv.cpp )
+set( QWC_COMMON_SOURCES src/main.cpp src/cli.cpp src/processfile.cpp src/validatecsv.cpp src/validatecsv_cli.cpp )
 
 # GCC 13's -fanalyzer mis-models the libstdc++ vector constructor and reports
 # bogus warnings on two of our TUs. Mute exactly those checks, only for

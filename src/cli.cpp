@@ -11,11 +11,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
-#include <utility>
 #include <vector>
 
 #include "qwc_version.h"
-#include "validatecsv.h"
 
 void printHelp()
 {
@@ -314,126 +312,10 @@ std::optional<i32> parseArgs( i32 argc, char** argv, Options& opt )
   return std::nullopt;
 }
 
-// Report a validate-csv usage error and return the exit code (1). A free
-// function rather than a lambda (project convention), shared by the option
-// checks below.
-static std::optional<i32> csvUsageErr( const char* msg )
+Options::~Options()
 {
-  std::fprintf( stderr, "Error: %s\n", msg );
-  return 1;
+  for ( char* p: ownedPaths ) std::free( p );
 }
-
-// Apply a mode flag, rejecting a second one (the modes are mutually exclusive).
-// `seen` tracks whether any mode flag was already given.
-static std::optional<i32> setMode( CsvMode m, CsvMode& mode, bool& seen )
-{
-  if ( seen )
-    return csvUsageErr(
-        "--fast, --list, --first and --all are mutually exclusive"
-    );
-  mode = m;
-  seen = true;
-  return std::nullopt;
-}
-
-std::optional<i32> parseValidateCsvArgs(
-    i32 argc, char** argv, CsvDialect& d, CsvMode& mode,
-    std::vector<const char*>& files
-)
-{
-  mode = CsvMode::All;  // default: list every ragged row
-  bool modeSeen = false;
-  // argv[0] is the program, argv[1] is "--validate-csv"; parse from argv[2].
-  for ( i32 i = 2; i < argc; ++i ) {
-    const char* a = argv[i];
-    if ( std::strncmp( a, "--delim=", 8 ) == 0 ) {
-      if ( a[8] == '\0' || a[9] != '\0' )
-        return csvUsageErr( "--delim needs exactly one byte" );
-      d.delim = a[8];
-    } else if ( std::strncmp( a, "--quote=", 8 ) == 0 ) {
-      if ( a[8] == '\0' )
-        d.quoting = false;  // --quote= disables quote handling entirely
-      else if ( a[9] != '\0' )
-        return csvUsageErr( "--quote needs exactly one byte" );
-      else
-        d.quote = a[8];
-    } else if ( std::strncmp( a, "--esc=", 6 ) == 0 ) {
-      if ( a[6] == '\0' || a[7] != '\0' )
-        return csvUsageErr( "--esc needs exactly one byte" );
-      d.esc = a[6];
-      d.backslashEsc = true;
-    } else if ( std::strcmp( a, "--fast" ) == 0 ) {
-      if ( const std::optional<i32> e =
-               setMode( CsvMode::Fast, mode, modeSeen ) )
-        return e;
-    } else if ( std::strcmp( a, "--list" ) == 0 ) {
-      if ( const std::optional<i32> e =
-               setMode( CsvMode::List, mode, modeSeen ) )
-        return e;
-    } else if ( std::strcmp( a, "--first" ) == 0 ) {
-      if ( const std::optional<i32> e =
-               setMode( CsvMode::First, mode, modeSeen ) )
-        return e;
-    } else if ( std::strcmp( a, "--all" ) == 0 ) {
-      if ( const std::optional<i32> e =
-               setMode( CsvMode::All, mode, modeSeen ) )
-        return e;
-    } else if ( std::strcmp( a, "-h" ) == 0 ||
-                std::strcmp( a, "--help" ) == 0 ) {
-      std::fputs(
-          "Usage: qwc --validate-csv [--delim=,] [--quote=\"] [--esc=\\]\n"
-          "                          [--fast|--list|--first|--all] [FILE ...]\n"
-          "\n"
-          "Prove CSV files are rectangular: every record has the same number "
-          "of\n"
-          "fields. Quoted content (and, with --esc, backslash-escaped bytes) "
-          "is\n"
-          "masked, so embedded delimiters and newlines do not split records. "
-          "Reads\n"
-          "standard input when no FILE is given; with several files each is\n"
-          "validated independently and only the invalid ones are reported, "
-          "one\n"
-          "line each in argument order. Exits 0 when every input is valid\n"
-          "(printing nothing), 1 when any is invalid. The per-file report (on\n"
-          "stdout, prefixed by the file name, or `-` for stdin) is selected "
-          "by:\n"
-          "  --all    <name>: r1,r2,...  every ragged row, comma-separated "
-          "(default)\n"
-          "  --first  <name>: r1         just the first ragged row\n"
-          "  --list   <name>             just the name (handy across many "
-          "files)\n"
-          "  --fast   (no output)        validity as the exit code only\n",
-          stdout
-      );
-      return 0;
-    } else if ( a[0] == '-' && a[1] != '\0' ) {
-      std::fprintf( stderr, "Error: unknown validate-csv flag %s\n", a );
-      return 1;
-    } else {
-      files.push_back( a );  // a file argument (the shell expands any glob)
-    }
-  }
-
-  // The delimiter, quote, escape and newline must be distinct so each byte has
-  // one meaning. With quoting disabled only the delimiter/newline clash
-  // matters.
-  if ( d.quoting ) {
-    if ( d.delim == d.quote || d.delim == '\n' || d.quote == '\n' )
-      return csvUsageErr( "--delim, --quote and newline must be distinct" );
-    if ( d.backslashEsc &&
-         ( d.esc == d.delim || d.esc == d.quote || d.esc == '\n' ) )
-      return csvUsageErr(
-          "--esc must differ from --delim, --quote and newline"
-      );
-  } else if ( d.delim == '\n' ) {
-    return csvUsageErr( "--delim must not be newline" );
-  }
-  return std::nullopt;
-}
-
-// ownedPaths is a vector of MallocOwner (see cli.h), so destroying it frees
-// every walk-allocated path -- nothing to do by hand.
-Options::~Options() = default;
 
 Workload Options::workload() const
 {
@@ -456,14 +338,31 @@ Workload Options::workload() const
 
 namespace {
 
-// Small hand-rolled RAII guard for the DIR* in walkDir below. (The heap-path
-// owner, MallocOwner, lives in cli.h because Options::ownedPaths is a vector of
-// them.) Under -fno-exceptions (Release) the would-be-throwing edges in walkDir
-// (std::vector::push_back, recursive walkDir) all degrade to terminate(), so
-// leaks are impossible there; Debug keeps exceptions on per the binary-size
-// branch's CMake gate, and these RAII guards keep the unwind path leak-free. No
-// <memory> include (unique_ptr<DIR, decltype(&closedir)> works but the
-// deleter-type spelling at the call site doesn't pay rent for one use).
+// Small hand-rolled RAII guards for the heap path and DIR* in walkDir below.
+// Under -fno-exceptions (Release) the would-be-throwing edges in walkDir
+// (std::vector::push_back, recursive walkDir) all degrade to terminate(),
+// so leaks are impossible there. Debug builds keep exceptions on per the
+// binary-size branch's CMake gate, and the previous manual std::free /
+// closedir pattern was exception-unsafe: GCC 16's -fanalyzer correctly
+// flagged that push_back's bad_alloc could unwind out of walkDir leaving
+// `path` and the DIR* leaked (GCC 13 doesn't model this; CI didn't catch
+// it). Two tiny structs in the project style; no <memory> include
+// (unique_ptr<DIR, decltype(&closedir)> works but the deleter-type spelling
+// at every call site doesn't pay rent for two sites).
+struct MallocOwner
+{
+  char* ptr;
+  ~MallocOwner() { std::free( ptr ); }
+  char* release()
+  {
+    char* p = ptr;
+    ptr = nullptr;
+    return p;
+  }
+  MallocOwner( const MallocOwner& ) = delete;
+  MallocOwner& operator=( const MallocOwner& ) = delete;
+};
+
 struct DirCloser
 {
   DIR* d;
@@ -501,8 +400,7 @@ char* joinPath( const char* dir, const char* name )
 // took before this was hand-rolled. Returns false only when `dir` itself
 // cannot be opened; deeper failures just prune that subtree.
 bool walkDir(
-    const char* dir, std::vector<const char*>& out,
-    std::vector<MallocOwner>& owned
+    const char* dir, std::vector<const char*>& out, std::vector<char*>& owned
 )
 {
   DIR* dptr = opendir( dir );
@@ -538,12 +436,13 @@ bool walkDir(
         type = DT_REG;
     }
     if ( type == DT_REG ) {
-      // Move the owner into `owned` first (a bad_alloc from THIS push leaves
-      // `path` un-moved, so its MallocOwner frees it on unwind); then store a
-      // non-owning view in `out`. After the move `path` is emptied, so its
-      // end-of-scope dtor is a no-op and there is no double-free.
-      char* const p = path.ptr;
-      owned.push_back( std::move( path ) );
+      // Take ownership in `owned` first (so a bad_alloc from THIS push leaves
+      // path with its MallocOwner intact and the guard frees it during
+      // unwinding); release the guard so the second push's bad_alloc won't
+      // double-free (owned has it, ~Options will free it via opt.ownedPaths).
+      char* p = path.ptr;
+      owned.push_back( p );
+      path.release();
       out.push_back( p );
       continue;
     }
