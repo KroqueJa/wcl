@@ -70,8 +70,9 @@ i32 validateCsv(
 
 // The enumerated ragged rows of one input: ascending 1-based row numbers (up to
 // the requested `cap`) and `truncated` = "more than cap bad rows exist". For a
-// valid input `rows` is empty. This is the parallel default-mode (--all/--first)
-// inspection; tests pass a small `bytesPerThread` to force chunk seams.
+// valid input `rows` is empty. This is the parallel default-mode
+// (--all/--first) inspection; tests pass a small `bytesPerThread` to force
+// chunk seams.
 struct CsvBadRows
 {
   std::vector<usize> rows;

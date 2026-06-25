@@ -29,9 +29,7 @@ namespace {
 // one uop and returns the bit-per-byte mask directly -- simpler than the NEON
 // vshrn nibble mask used in validatecsv_neon.cpp.
 inline u32 movemask32( const __m256i cmp )
-{
-  return static_cast<u32>( _mm256_movemask_epi8( cmp ) );
-}
+{ return static_cast<u32>( _mm256_movemask_epi8( cmp ) ); }
 
 inline u32 eqMask( const __m256i v, const u8 c )
 {
@@ -43,9 +41,7 @@ inline u32 eqMask( const __m256i v, const u8 c )
 // Bits for bytes [0, b): bit-per-byte version of validatecsv_neon.cpp's
 // nibblesBelow / maskBelow16, widened to 32 bytes per block.
 inline u32 maskBelow32( const u32 b )
-{
-  return b >= 32 ? ~0u : ( ( 1u << b ) - 1u );
-}
+{ return b >= 32 ? ~0u : ( ( 1u << b ) - 1u ); }
 
 }  // namespace
 

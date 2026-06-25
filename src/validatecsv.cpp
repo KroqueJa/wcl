@@ -213,9 +213,9 @@ bool collectBadRowsSeeded(
 
 // Pick the summary a chunk presents to reconciliation given the entry quote
 // parity: a clean chunk uses its naive summary when entered outside, or a
-// synthesized "one big quoted blob" when entered inside (no real records, parity
-// unchanged, content present since chunks are non-empty); a dirty chunk uses the
-// matching hypothesis.
+// synthesized "one big quoted blob" when entered inside (no real records,
+// parity unchanged, content present since chunks are non-empty); a dirty chunk
+// uses the matching hypothesis.
 CsvChunkSummary selectSummary( const ChunkResult& r, bool inside )
 {
   if ( !r.dirty ) {
@@ -228,25 +228,26 @@ CsvChunkSummary selectSummary( const ChunkResult& r, bool inside )
   return inside ? r.h1 : r.h0;
 }
 
-// What a flagged (violation-bearing) chunk needs to be enumerated independently:
-// its byte offset (chunkIndex * bpt) and the resolved seam state at its start.
+// What a flagged (violation-bearing) chunk needs to be enumerated
+// independently: its byte offset (chunkIndex * bpt) and the resolved seam state
+// at its start.
 struct CsvBadChunk
 {
-  usize chunkIndex;    // byte offset = chunkIndex * bpt
-  bool inside;         // resolved entry quote parity
-  usize carryDelims;   // open-record delims carried in (for the leading record)
-  bool haveExpected;   // was `expected` already set at this chunk's start?
-  usize expected;      // global reference field-delim count (0 if not yet set)
-  usize firstRow;      // 1-based row of this chunk's first completing record
+  usize chunkIndex;   // byte offset = chunkIndex * bpt
+  bool inside;        // resolved entry quote parity
+  usize carryDelims;  // open-record delims carried in (for the leading record)
+  bool haveExpected;  // was `expected` already set at this chunk's start?
+  usize expected;     // global reference field-delim count (0 if not yet set)
+  usize firstRow;     // 1-based row of this chunk's first completing record
 };
 
 // Serial seam pass: chain quote parity, set `expected` from the first completed
 // record, and FLAG every chunk that contains a record whose field count differs
 // from `expected` (leading, interior, or the EOF/unterminated-quote record),
-// recording each flagged chunk's resolved entry state. Returns true iff the file
-// is rectangular (no chunk flagged). Unlike a plain validity check it does not
-// early-return: it must find ALL bad chunks. The valid case flags nothing, so
-// the fast path is unchanged.
+// recording each flagged chunk's resolved entry state. Returns true iff the
+// file is rectangular (no chunk flagged). Unlike a plain validity check it does
+// not early-return: it must find ALL bad chunks. The valid case flags nothing,
+// so the fast path is unchanged.
 bool reconcileAndFlag(
     const ChunkResult* res, usize nChunks, std::vector<CsvBadChunk>& flagged
 )
@@ -256,8 +257,9 @@ bool reconcileAndFlag(
   CsvBadChunk lastSeed{};  // entry seed of the final chunk (for the EOF record)
 
   for ( usize i = 0; i < nChunks; ++i ) {
-    const CsvBadChunk seed{ i,          inside,   carryDelims,
-                            haveExpected, expected, recordsSoFar + 1 };
+    const CsvBadChunk seed{ i,           inside,
+                            carryDelims, haveExpected,
+                            expected,    recordsSoFar + 1 };
     lastSeed = seed;
     const CsvChunkSummary s = selectSummary( res[i], inside );
     bool chunkBad = false;
@@ -297,8 +299,9 @@ bool reconcileAndFlag(
   return flagged.empty();
 }
 
-// Launch the two-phase workers over `res` (one ChunkResult per chunk). Threading
-// economy mirrors the counting path: one worker per chunk up to maxThreads().
+// Launch the two-phase workers over `res` (one ChunkResult per chunk).
+// Threading economy mirrors the counting path: one worker per chunk up to
+// maxThreads().
 void runValidityWorkers(
     i32 fd, usize fileSize, const CsvDialect& d, usize bpt,
     std::vector<ChunkResult>& res
@@ -336,7 +339,8 @@ bool validateCsvParallelValid(
 }
 
 // Read [start, start+len) of a regular file into `buf` via pread; returns the
-// byte count actually read (the final chunk is short). Mirrors csvWorker's read.
+// byte count actually read (the final chunk is short). Mirrors csvWorker's
+// read.
 usize preadChunk( i32 fd, std::vector<char>& buf, usize start, usize len )
 {
   buf.resize( len );
@@ -381,8 +385,8 @@ void enumWorker( EnumCtx* ctx )
     const bool entryEsc = entryEscapedAt( ctx->fd, start, *ctx->d );
     ctx->more[k] = collectBadRowsSeeded(
                        buf.data(), got, *ctx->d, fc.inside, entryEsc,
-                       fc.carryDelims, fc.expected, fc.haveExpected, fc.firstRow,
-                       atEof, ctx->cap, ctx->perChunk[k]
+                       fc.carryDelims, fc.expected, fc.haveExpected,
+                       fc.firstRow, atEof, ctx->cap, ctx->perChunk[k]
                    )
                        ? 1
                        : 0;
@@ -403,7 +407,7 @@ CsvBadRows enumerateFlagged(
   std::vector<std::vector<usize>> perChunk( n );
   std::vector<unsigned char> more( n, 0 );
   std::atomic<usize> next{ 0 };
-  EnumCtx ctx{ fd,  fileSize,        &flagged,    &d,        bpt,
+  EnumCtx ctx{ fd,  fileSize,        &flagged,    &d,   bpt,
                cap, perChunk.data(), more.data(), &next };
 
   const u32 nWorkers = static_cast<u32>( std::min<usize>( n, maxThreads() ) );
@@ -438,14 +442,15 @@ constexpr usize kAllRowsCap = 1000;
 // entry state (`entryInside` quote parity, `entryEscaped` backslash state,
 // `carryDelims` open-record delimiters carried from prior chunks). When
 // `haveExpected` is true the global reference field-count is supplied (the
-// per-chunk enumeration path); when false it is derived from the first completed
-// record (the whole-buffer / stdin path). The i-th completing record is numbered
-// `firstRow + i`. `atEof` is true only when the buffer's end is the real end of
-// file: only then is a trailing record (no final '\n') or an unterminated quote
-// judged. For a non-final chunk the trailing partial record continues into the
-// next chunk and must NOT be judged here -- it is judged when it completes there
-// (as that chunk's leading record). Stops once more than `cap` bad rows are
-// found and returns true (truncated). Mirrors validateCsvSequential.
+// per-chunk enumeration path); when false it is derived from the first
+// completed record (the whole-buffer / stdin path). The i-th completing record
+// is numbered `firstRow + i`. `atEof` is true only when the buffer's end is the
+// real end of file: only then is a trailing record (no final '\n') or an
+// unterminated quote judged. For a non-final chunk the trailing partial record
+// continues into the next chunk and must NOT be judged here -- it is judged
+// when it completes there (as that chunk's leading record). Stops once more
+// than `cap` bad rows are found and returns true (truncated). Mirrors
+// validateCsvSequential.
 bool collectBadRowsSeeded(
     const char* buf, usize len, const CsvDialect& d, bool entryInside,
     bool entryEscaped, usize carryDelims, usize expected, bool haveExpected,
@@ -459,7 +464,8 @@ bool collectBadRowsSeeded(
   // `buf` (it thinks .data() can be null while .size() > 0) and flags `buf[i]`.
   if ( buf == nullptr ) return false;
   bool inQuotes = entryInside, escaped = entryEscaped, recordHasContent = false;
-  usize delims = carryDelims, row = firstRow - 1;  // first completion -> firstRow
+  usize delims = carryDelims,
+        row = firstRow - 1;  // first completion -> firstRow
   const auto delim = static_cast<unsigned char>( d.delim );
   const auto quote = static_cast<unsigned char>( d.quote );
   const auto esc = static_cast<unsigned char>( d.esc );
@@ -503,9 +509,8 @@ bool collectBadRowsSeeded(
   }
   // Only at the real EOF: the final record is bad if a quote is still open
   // (unterminated) or it is a ragged final record with no trailing newline.
-  if ( atEof &&
-       ( inQuotes ||
-         ( recordHasContent && haveExpected && delims != expected ) ) ) {
+  if ( atEof && ( inQuotes || ( recordHasContent && haveExpected &&
+                                delims != expected ) ) ) {
     if ( bad.size() == cap ) return true;
     bad.push_back( row + 1 );
   }
@@ -597,9 +602,7 @@ i32 printBadRows( const char* name, CsvMode mode, const CsvBadRows& br )
 CsvVerdict validateCsvBuffer(
     const char* buf, const usize len, const CsvDialect& d
 )
-{
-  return validateCsvSequential( buf, len, d );
-}
+{ return validateCsvSequential( buf, len, d ); }
 
 CsvBadRows validateCsvBadRows(
     const char* filename, const CsvDialect& d, usize cap, usize bytesPerThread
@@ -699,7 +702,10 @@ i32 validateCsv(
   br.truncated = collectBadRows( buf.data(), buf.size(), d, cap, br.rows );
   if ( br.rows.empty() ) return 0;
   if ( mode == CsvMode::Fast ) return 1;
-  if ( mode == CsvMode::List ) { std::printf( "%s\n", name ); return 1; }
+  if ( mode == CsvMode::List ) {
+    std::printf( "%s\n", name );
+    return 1;
+  }
   return printBadRows( name, mode, br );
 }
 

@@ -78,8 +78,9 @@ std::optional<i32> parseValidateCsvArgs(
       if ( const std::optional<i32> e =
                setMode( CsvMode::All, mode, modeSeen ) )
         return e;
-    } else if ( std::strcmp( a, "-h" ) == 0 ||
-                std::strcmp( a, "--help" ) == 0 ) {
+    } else if (
+        std::strcmp( a, "-h" ) == 0 || std::strcmp( a, "--help" ) == 0
+    ) {
       std::fputs(
           "Usage: qwc --validate-csv [--delim=,] [--quote=\"] [--esc=\\]\n"
           "                          [--fast|--list|--first|--all] [FILE ...]\n"

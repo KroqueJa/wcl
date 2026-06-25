@@ -545,8 +545,10 @@ i32 sortCompare( const void* pa, const void* pb )
     const usize va = columnValue( ( *ctx.output )[a], ctx.col, *ctx.opt );
     const usize vb = columnValue( ( *ctx.output )[b], ctx.col, *ctx.opt );
     if ( va != vb ) return va < vb ? -1 : 1;
-  } else if ( ctx.opt->sortMode == SortMode::Size &&
-              ( *ctx.sizes )[a] != ( *ctx.sizes )[b] ) {
+  } else if (
+      ctx.opt->sortMode == SortMode::Size &&
+      ( *ctx.sizes )[a] != ( *ctx.sizes )[b]
+  ) {
     return ( *ctx.sizes )[a] < ( *ctx.sizes )[b] ? -1 : 1;
   }
   return std::strcmp( ctx.opt->files[a], ctx.opt->files[b] );

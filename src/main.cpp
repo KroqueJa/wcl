@@ -67,9 +67,7 @@ enum class ExitPoint : i32
   FrameStateFor = 83,
 };
 [[noreturn]] static void exitFrom( ExitPoint p )
-{
-  std::_Exit( static_cast<i32>( p ) );
-}
+{ std::_Exit( static_cast<i32>( p ) ); }
 
 // Override libstdc++'s default std::terminate handler. The stock one
 // (__verbose_terminate_handler in libsupc++/vterminate.cc) formats "terminate
@@ -86,18 +84,14 @@ enum class ExitPoint : i32
 namespace __gnu_cxx {
 // NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
 void __verbose_terminate_handler()
-{
-  exitFrom( ExitPoint::VerboseTerminate );
-}
+{ exitFrom( ExitPoint::VerboseTerminate ); }
 }  // namespace __gnu_cxx
 
 // Override the C++ exception personality routine: libstdc++.a's
 // eh_personality.o is no longer pulled into the link.
 // NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
 extern "C" i32 __gxx_personality_v0( i32, i32, u64, void*, void* )
-{
-  exitFrom( ExitPoint::PersonalityV0 );
-}
+{ exitFrom( ExitPoint::PersonalityV0 ); }
 
 // Override every public symbol that libgcc's unwind-dw2.o defines. libstdc++
 // TUs reference these (thread.o, eh_throw.o, stdexcept.o, ...; traced with
@@ -110,77 +104,41 @@ extern "C" i32 __gxx_personality_v0( i32, i32, u64, void*, void* )
 // std::terminate(); any reach into these is a last-resort path.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
 extern "C" void _Unwind_Resume( void* )
-{
-  exitFrom( ExitPoint::UnwindResume );
-}
+{ exitFrom( ExitPoint::UnwindResume ); }
 extern "C" i32 _Unwind_RaiseException( void* )
-{
-  exitFrom( ExitPoint::UnwindRaiseException );
-}
+{ exitFrom( ExitPoint::UnwindRaiseException ); }
 extern "C" i32 _Unwind_Resume_or_Rethrow( void* )
-{
-  exitFrom( ExitPoint::UnwindResumeOrRethrow );
-}
+{ exitFrom( ExitPoint::UnwindResumeOrRethrow ); }
 extern "C" i32 _Unwind_ForcedUnwind( void*, void*, void* )
-{
-  exitFrom( ExitPoint::UnwindForcedUnwind );
-}
+{ exitFrom( ExitPoint::UnwindForcedUnwind ); }
 extern "C" i32 _Unwind_Backtrace( void*, void* )
-{
-  exitFrom( ExitPoint::UnwindBacktrace );
-}
+{ exitFrom( ExitPoint::UnwindBacktrace ); }
 extern "C" void _Unwind_DeleteException( void* )
-{
-  exitFrom( ExitPoint::UnwindDeleteException );
-}
+{ exitFrom( ExitPoint::UnwindDeleteException ); }
 extern "C" void* _Unwind_FindEnclosingFunction( void* )
-{
-  exitFrom( ExitPoint::UnwindFindEnclosingFunction );
-}
+{ exitFrom( ExitPoint::UnwindFindEnclosingFunction ); }
 extern "C" u64 _Unwind_GetCFA( void* )
-{
-  exitFrom( ExitPoint::UnwindGetCFA );
-}
+{ exitFrom( ExitPoint::UnwindGetCFA ); }
 extern "C" u64 _Unwind_GetDataRelBase( void* )
-{
-  exitFrom( ExitPoint::UnwindGetDataRelBase );
-}
+{ exitFrom( ExitPoint::UnwindGetDataRelBase ); }
 extern "C" u64 _Unwind_GetGR( void*, i32 )
-{
-  exitFrom( ExitPoint::UnwindGetGR );
-}
+{ exitFrom( ExitPoint::UnwindGetGR ); }
 extern "C" u64 _Unwind_GetIP( void* )
-{
-  exitFrom( ExitPoint::UnwindGetIP );
-}
+{ exitFrom( ExitPoint::UnwindGetIP ); }
 extern "C" u64 _Unwind_GetIPInfo( void*, i32* )
-{
-  exitFrom( ExitPoint::UnwindGetIPInfo );
-}
+{ exitFrom( ExitPoint::UnwindGetIPInfo ); }
 extern "C" u64 _Unwind_GetLanguageSpecificData( void* )
-{
-  exitFrom( ExitPoint::UnwindGetLanguageSpecificData );
-}
+{ exitFrom( ExitPoint::UnwindGetLanguageSpecificData ); }
 extern "C" u64 _Unwind_GetRegionStart( void* )
-{
-  exitFrom( ExitPoint::UnwindGetRegionStart );
-}
+{ exitFrom( ExitPoint::UnwindGetRegionStart ); }
 extern "C" u64 _Unwind_GetTextRelBase( void* )
-{
-  exitFrom( ExitPoint::UnwindGetTextRelBase );
-}
+{ exitFrom( ExitPoint::UnwindGetTextRelBase ); }
 extern "C" void _Unwind_SetGR( void*, i32, u64 )
-{
-  exitFrom( ExitPoint::UnwindSetGR );
-}
+{ exitFrom( ExitPoint::UnwindSetGR ); }
 extern "C" void _Unwind_SetIP( void*, u64 )
-{
-  exitFrom( ExitPoint::UnwindSetIP );
-}
+{ exitFrom( ExitPoint::UnwindSetIP ); }
 extern "C" void __frame_state_for( void*, void* )
-{
-  exitFrom( ExitPoint::FrameStateFor );
-}
+{ exitFrom( ExitPoint::FrameStateFor ); }
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
 
 #endif  // !__APPLE__ && NDEBUG

@@ -35,21 +35,15 @@ inline u64 nibbleMask( const uint8x16_t cmp )
 }
 
 inline u64 nibbleEq( const uint8x16_t v, const u8 c )
-{
-  return nibbleMask( vceqq_u8( v, vdupq_n_u8( c ) ) );
-}
+{ return nibbleMask( vceqq_u8( v, vdupq_n_u8( c ) ) ); }
 
 // Nibble mask for bytes [0, byteIdx): each counted byte is a 0xF nibble.
 inline u64 nibblesBelow( const usize byteIdx )
-{
-  return byteIdx >= 16 ? ~0ull : ( ( 1ull << ( 4 * byteIdx ) ) - 1 );
-}
+{ return byteIdx >= 16 ? ~0ull : ( ( 1ull << ( 4 * byteIdx ) ) - 1 ); }
 
 // Delimiter bytes selected by `mask` (a nibble mask), as a count of bytes.
 inline u64 delimsIn( const u64 delimNib, const u64 mask )
-{
-  return static_cast<u64>( __builtin_popcountll( delimNib & mask ) ) >> 2;
-}
+{ return static_cast<u64>( __builtin_popcountll( delimNib & mask ) ) >> 2; }
 
 }  // namespace
 
@@ -126,7 +120,8 @@ inline u32 prefixXor16( u32 x )
       static_cast<poly64_t>( static_cast<u64>( x & 0xFFFFu ) ),
       static_cast<poly64_t>( ~0ull )
   );
-  return static_cast<u32>( vgetq_lane_u64( vreinterpretq_u64_p128( prod ), 0 )
+  return static_cast<u32>(
+             vgetq_lane_u64( vreinterpretq_u64_p128( prod ), 0 )
          ) &
          0xFFFFu;
 #else
@@ -142,9 +137,7 @@ inline u32 prefixXor16( u32 x )
 
 // Bits for bytes [0, b): a bit-per-byte version of nibblesBelow.
 inline u32 maskBelow16( const u32 b )
-{
-  return b >= 16 ? 0xFFFFu : ( ( 1u << b ) - 1u );
-}
+{ return b >= 16 ? 0xFFFFu : ( ( 1u << b ) - 1u ); }
 
 // Segment one 16-byte block given its real (outside-quote) delimiter and
 // newline bit masks, threading the shared record state. Mirrors csvBlindChunk's
