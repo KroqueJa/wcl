@@ -35,7 +35,11 @@ jobs:
       - uses: actions/checkout@v4  # no submodules: only repo sources are checked
 
       - name: Install clang-format-22
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-22
+        # clang-format-22 isn't in the default Ubuntu repos; pull it from the
+        # official LLVM apt repository (apt.llvm.org) via the llvm.sh helper.
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 22
+          sudo apt-get install -y -qq clang-format-22
 
       - name: Check formatting (scripts/check-format.sh --fix to repair locally)
         run: ./scripts/check-format.sh
