@@ -34,11 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4  # no submodules: only repo sources are checked
 
-      - name: Install clang-format-20
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-20
+      - name: Install clang-format-22
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-22
 
       - name: Check formatting (scripts/check-format.sh --fix to repair locally)
         run: ./scripts/check-format.sh
+        env:
+          CLANG_FORMAT: clang-format-22
 
   clang-tidy:
     name: clang-tidy (${{ matrix.os }})
