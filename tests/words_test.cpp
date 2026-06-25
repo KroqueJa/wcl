@@ -45,9 +45,7 @@ const WordsMode kUtf8Posix{ true, false };
 // Sub-row index helper: ((lead - 0xE0) << 6) | (cont1 & 0x3F). Matches the
 // kernel's lookup form and the generator's emission order.
 u8 candLead3Cell( u32 lead, u32 c1 )
-{
-  return kCandLead3[( ( lead - 0xE0u ) << 6 ) | ( c1 & 0x3Fu )];
-}
+{ return kCandLead3[( ( lead - 0xE0u ) << 6 ) | ( c1 & 0x3Fu )]; }
 
 }  // namespace
 

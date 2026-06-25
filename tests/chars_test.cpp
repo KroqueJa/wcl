@@ -20,9 +20,7 @@ using qwctest::refChars;
 // Basic / edge cases
 // ---------------------------------------------------------------------------
 TEST( Chars, EmptyBuffer )
-{
-  EXPECT_EQ( charsStr( "" ), 0u );
-}
+{ EXPECT_EQ( charsStr( "" ), 0u ); }
 
 TEST( Chars, ZeroLengthIgnoresPointer )
 {
@@ -31,14 +29,10 @@ TEST( Chars, ZeroLengthIgnoresPointer )
 }
 
 TEST( Chars, AsciiCountsLikeBytes )
-{
-  EXPECT_EQ( charsStr( "hello world" ), 11u );
-}
+{ EXPECT_EQ( charsStr( "hello world" ), 11u ); }
 
 TEST( Chars, AsciiWithNewlines )
-{
-  EXPECT_EQ( charsStr( "a\nb\nc\n" ), 6u );
-}
+{ EXPECT_EQ( charsStr( "a\nb\nc\n" ), 6u ); }
 
 TEST( Chars, EmbeddedNulCounts )
 {

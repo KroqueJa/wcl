@@ -332,7 +332,16 @@ bool validateCsvParallelValid(
 )
 {
   const usize nChunks = ( fileSize + bpt - 1 ) / bpt;
-  std::vector<ChunkResult> res( nChunks );
+  // Fill-construct from an explicit value-initialized prototype rather than the
+  // default-insertion form `res( nChunks )`. They are equivalent (ChunkResult's
+  // `dirty = false` NSDMI runs either way), but GCC 13's -fanalyzer doesn't
+  // track the NSDMI through vector default-insertion and reports a bogus
+  // use-of-uninitialized-value on res[i].dirty in selectSummary (walking an
+  // infeasible path where csvWorker returns before filling res[i]). It does
+  // model the copy from a known-initialized prototype, so this silences the
+  // false positive at the source. A per-TU -Wno does NOT work: under -flto the
+  // diagnostic is anchored to validatecsv.h, not this TU.
+  std::vector<ChunkResult> res( nChunks, ChunkResult{} );
   runValidityWorkers( fd, fileSize, d, bpt, res );
   std::vector<CsvBadChunk> flagged;
   return reconcileAndFlag( res.data(), nChunks, flagged );
@@ -614,7 +623,9 @@ CsvBadRows validateCsvBadRows(
     // Validity pass first; on failure, re-walk only the flagged chunks (no
     // whole-file second read). The valid case returns here untouched.
     const usize nChunks = ( in.size + bytesPerThread - 1 ) / bytesPerThread;
-    std::vector<ChunkResult> res( nChunks );
+    // Value-initialized prototype to dodge the GCC -fanalyzer NSDMI mis-model
+    // (see validateCsvParallelValid above).
+    std::vector<ChunkResult> res( nChunks, ChunkResult{} );
     runValidityWorkers( in.fd, in.size, d, bytesPerThread, res );
     std::vector<CsvBadChunk> flagged;
     if ( reconcileAndFlag( res.data(), nChunks, flagged ) ) {
@@ -670,7 +681,9 @@ i32 validateCsv(
   // directly -- no whole-file second read.
   if ( in.bigRegular ) {
     const usize nChunks = ( in.size + bytesPerThread - 1 ) / bytesPerThread;
-    std::vector<ChunkResult> res( nChunks );
+    // Value-initialized prototype to dodge the GCC -fanalyzer NSDMI mis-model
+    // (see validateCsvParallelValid above).
+    std::vector<ChunkResult> res( nChunks, ChunkResult{} );
     runValidityWorkers( in.fd, in.size, d, bytesPerThread, res );
     std::vector<CsvBadChunk> flagged;
     if ( reconcileAndFlag( res.data(), nChunks, flagged ) ) {

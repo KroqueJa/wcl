@@ -76,14 +76,10 @@ inline usize refCount( const char* buffer, usize length, char target )
 }
 
 inline usize refCount( const std::string& s, char target = '\n' )
-{
-  return refCount( s.data(), s.size(), target );
-}
+{ return refCount( s.data(), s.size(), target ); }
 
 inline usize countStr( const std::string& s, char target = '\n' )
-{
-  return count( s.data(), s.size(), target );
-}
+{ return count( s.data(), s.size(), target ); }
 
 // Independent reference for `words`. Deliberately structured differently from
 // the implementation under test -- it tokenizes by skipping whitespace then
@@ -196,9 +192,7 @@ inline usize refChars( const std::string& s )
 
 // Run `chars` over a whole string in one shot.
 inline usize charsStr( const std::string& s )
-{
-  return chars( s.data(), s.size() );
-}
+{ return chars( s.data(), s.size() ); }
 
 // Run `chars` over the string fed in fixed-size pieces, the way a single thread
 // streams successive read buffers. Because each byte is classified on its own,
@@ -290,7 +284,8 @@ inline CsvVerdict refValidateCsv( const std::string& s, const CsvDialect& d )
 // numbers and a `truncated` flag (more than `cap` bad rows exist). This is the
 // oracle the parallel flagged-chunk enumeration must match for any chunking.
 inline std::pair<std::vector<usize>, bool> refBadRows(
-    const std::string& s, const CsvDialect& d, usize cap )
+    const std::string& s, const CsvDialect& d, usize cap
+)
 {
   std::vector<usize> bad;
   bool inQuotes = false, escaped = false, recordHasContent = false;
@@ -334,7 +329,8 @@ inline std::pair<std::vector<usize>, bool> refBadRows(
     }
     recordHasContent = true;
   }
-  if ( inQuotes || ( recordHasContent && haveExpected && delims != expected ) ) {
+  if ( inQuotes ||
+       ( recordHasContent && haveExpected && delims != expected ) ) {
     if ( bad.size() == cap ) return { bad, true };
     bad.push_back( row + 1 );
   }

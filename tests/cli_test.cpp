@@ -577,8 +577,8 @@ TEST( Cli, SingleFileDefaultThreeColumns )
 {
   std::string create = "printf '%b' 'a b\\nc\\n' > /tmp/qwc_cli_def.txt && ";
   CmdResult r =
-      run( create + kBin + " /tmp/qwc_cli_def.txt; rm -f /tmp/qwc_cli_def.txt"
-      );
+      run( create + kBin +
+           " /tmp/qwc_cli_def.txt; rm -f /tmp/qwc_cli_def.txt" );
   EXPECT_EQ( r.exitCode, 0 );
   // 2 lines, 3 words, 6 bytes.
   EXPECT_EQ( r.out, allLine( 2, 3, 6, "/tmp/qwc_cli_def.txt" ) );

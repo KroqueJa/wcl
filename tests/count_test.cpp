@@ -16,9 +16,7 @@ using qwctest::refCount;
 // Basic / edge cases
 // ---------------------------------------------------------------------------
 TEST( Count, EmptyBuffer )
-{
-  EXPECT_EQ( countStr( "" ), 0u );
-}
+{ EXPECT_EQ( countStr( "" ), 0u ); }
 
 TEST( Count, ZeroLengthIgnoresPointer )
 {
@@ -34,34 +32,22 @@ TEST( Count, NullPointerWithZeroLength )
 }
 
 TEST( Count, NoTarget )
-{
-  EXPECT_EQ( countStr( "abcdef" ), 0u );
-}
+{ EXPECT_EQ( countStr( "abcdef" ), 0u ); }
 
 TEST( Count, SingleNewline )
-{
-  EXPECT_EQ( countStr( "\n" ), 1u );
-}
+{ EXPECT_EQ( countStr( "\n" ), 1u ); }
 
 TEST( Count, CountsNewlines )
-{
-  EXPECT_EQ( countStr( "a\nb\nc\n" ), 3u );
-}
+{ EXPECT_EQ( countStr( "a\nb\nc\n" ), 3u ); }
 
 TEST( Count, ConsecutiveNewlines )
-{
-  EXPECT_EQ( countStr( "\n\n\n" ), 3u );
-}
+{ EXPECT_EQ( countStr( "\n\n\n" ), 3u ); }
 
 TEST( Count, NoTrailingNewline )
-{
-  EXPECT_EQ( countStr( "a\nb\nc" ), 2u );
-}
+{ EXPECT_EQ( countStr( "a\nb\nc" ), 2u ); }
 
 TEST( Count, OnlyTargets )
-{
-  EXPECT_EQ( countStr( std::string( 50, '\n' ) ), 50u );
-}
+{ EXPECT_EQ( countStr( std::string( 50, '\n' ) ), 50u ); }
 
 // ---------------------------------------------------------------------------
 // Length parameter is authoritative (not NUL-termination)
@@ -89,9 +75,7 @@ TEST( Count, TargetPresentAfterEmbeddedNul )
 // Custom and high-bit targets (plain-char signedness must not matter)
 // ---------------------------------------------------------------------------
 TEST( Count, CustomTargetComma )
-{
-  EXPECT_EQ( countStr( "a,b,c,d", ',' ), 3u );
-}
+{ EXPECT_EQ( countStr( "a,b,c,d", ',' ), 3u ); }
 
 TEST( Count, HighByteTarget0xFF )
 {

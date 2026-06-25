@@ -23,9 +23,7 @@ using qwctest::refMaxLineLen;
 // Basic / edge cases
 // ---------------------------------------------------------------------------
 TEST( MaxLineLen, EmptyBuffer )
-{
-  EXPECT_EQ( maxLineLenStr( "" ), 0u );
-}
+{ EXPECT_EQ( maxLineLenStr( "" ), 0u ); }
 
 TEST( MaxLineLen, ZeroLengthIgnoresPointer )
 {
@@ -42,9 +40,7 @@ TEST( MaxLineLen, SingleLineNoNewlineNotCounted )
 }
 
 TEST( MaxLineLen, TrailingNewlineExcluded )
-{
-  EXPECT_EQ( maxLineLenStr( "abcd\n" ), 4u );
-}
+{ EXPECT_EQ( maxLineLenStr( "abcd\n" ), 4u ); }
 
 TEST( MaxLineLen, BlankLineIsZero )
 {
@@ -53,9 +49,7 @@ TEST( MaxLineLen, BlankLineIsZero )
 }
 
 TEST( MaxLineLen, LongestAmongSeveral )
-{
-  EXPECT_EQ( maxLineLenStr( "ab\nabcd\nx\n" ), 4u );
-}
+{ EXPECT_EQ( maxLineLenStr( "ab\nabcd\nx\n" ), 4u ); }
 
 TEST( MaxLineLen, UnterminatedFinalLineIgnored )
 {

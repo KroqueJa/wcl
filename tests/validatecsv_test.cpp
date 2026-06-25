@@ -50,44 +50,28 @@ void expectBadRow( const std::string& s, const CsvDialect& d, usize row )
 }  // namespace
 
 TEST( ValidateCsvBuffer, EmptyIsValid )
-{
-  expectValid( "", rfc() );
-}
+{ expectValid( "", rfc() ); }
 
 TEST( ValidateCsvBuffer, SingleRecordIsValid )
-{
-  expectValid( "a,b,c\n", rfc() );
-}
+{ expectValid( "a,b,c\n", rfc() ); }
 
 TEST( ValidateCsvBuffer, RectangularIsValid )
-{
-  expectValid( "a,b,c\n1,2,3\nx,y,z\n", rfc() );
-}
+{ expectValid( "a,b,c\n1,2,3\nx,y,z\n", rfc() ); }
 
 TEST( ValidateCsvBuffer, NoFinalNewlineValidated )
-{
-  expectValid( "a,b\n1,2", rfc() );
-}
+{ expectValid( "a,b\n1,2", rfc() ); }
 
 TEST( ValidateCsvBuffer, RaggedRowReported )
-{
-  expectBadRow( "a,b,c\n1,2\n", rfc(), 2 );
-}
+{ expectBadRow( "a,b,c\n1,2\n", rfc(), 2 ); }
 
 TEST( ValidateCsvBuffer, RaggedFinalNoNewline )
-{
-  expectBadRow( "a,b\n1,2,3", rfc(), 2 );
-}
+{ expectBadRow( "a,b\n1,2,3", rfc(), 2 ); }
 
 TEST( ValidateCsvBuffer, QuotedEmbeddedDelimIsContent )
-{
-  expectValid( "a,\"b,b\",c\n1,2,3\n", rfc() );
-}
+{ expectValid( "a,\"b,b\",c\n1,2,3\n", rfc() ); }
 
 TEST( ValidateCsvBuffer, QuotedEmbeddedNewlineMergesRecord )
-{
-  expectValid( "a,\"b\nb\",c\n1,2,3\n", rfc() );
-}
+{ expectValid( "a,\"b\nb\",c\n1,2,3\n", rfc() ); }
 
 TEST( ValidateCsvBuffer, DoubledQuoteIsLiteral )
 {
@@ -107,19 +91,13 @@ TEST( ValidateCsvBuffer, BackslashEscapedDelimIsContent )
 }
 
 TEST( ValidateCsvBuffer, CrlfIsValid )
-{
-  expectValid( "a,b\r\n1,2\r\n", rfc() );
-}
+{ expectValid( "a,b\r\n1,2\r\n", rfc() ); }
 
 TEST( ValidateCsvBuffer, UnterminatedQuoteIsInvalid )
-{
-  expectBadRow( "a,b\n1,\"2\n", rfc(), 2 );
-}
+{ expectBadRow( "a,b\n1,\"2\n", rfc(), 2 ); }
 
 TEST( ValidateCsvBuffer, BlankLineIsRaggedInWideFile )
-{
-  expectBadRow( "a,b\n\n", rfc(), 2 );
-}
+{ expectBadRow( "a,b\n\n", rfc(), 2 ); }
 
 TEST( ValidateCsvBuffer, QuotingDisabledTreatsQuoteAsContent )
 {
@@ -164,39 +142,25 @@ void seamCheck( const std::string& s, const CsvDialect& d )
 }  // namespace
 
 TEST( ValidateCsvParallel, RectangularAllSeams )
-{
-  seamCheck( "aa,bb,cc\n11,22,33\nxx,yy,zz\n", rfc() );
-}
+{ seamCheck( "aa,bb,cc\n11,22,33\nxx,yy,zz\n", rfc() ); }
 
 TEST( ValidateCsvParallel, RaggedAcrossSeams )
-{
-  seamCheck( "aa,bb,cc\n11,22\nxx,yy,zz\n", rfc() );
-}
+{ seamCheck( "aa,bb,cc\n11,22\nxx,yy,zz\n", rfc() ); }
 
 TEST( ValidateCsvParallel, QuotedEmbeddedDelimAcrossSeams )
-{
-  seamCheck( "aa,\"b,b,b\",cc\n11,22,33\n", rfc() );
-}
+{ seamCheck( "aa,\"b,b,b\",cc\n11,22,33\n", rfc() ); }
 
 TEST( ValidateCsvParallel, QuotedEmbeddedNewlineAcrossSeams )
-{
-  seamCheck( "aa,\"b\nb\nb\",cc\n11,22,33\n", rfc() );
-}
+{ seamCheck( "aa,\"b\nb\nb\",cc\n11,22,33\n", rfc() ); }
 
 TEST( ValidateCsvParallel, UnterminatedQuoteAcrossSeams )
-{
-  seamCheck( "aa,bb\n11,\"22\n", rfc() );
-}
+{ seamCheck( "aa,bb\n11,\"22\n", rfc() ); }
 
 TEST( ValidateCsvParallel, BackslashRunAcrossSeams )
-{
-  seamCheck( "aa,\"b\\\"x\",cc\n11,22,33\n", bsl() );
-}
+{ seamCheck( "aa,\"b\\\"x\",cc\n11,22,33\n", bsl() ); }
 
 TEST( ValidateCsvParallel, DoubledQuoteAcrossSeams )
-{
-  seamCheck( "aa,\"b\"\"b\",cc\n1,2,3\n", rfc() );
-}
+{ seamCheck( "aa,\"b\"\"b\",cc\n1,2,3\n", rfc() ); }
 
 // ---------------------------------------------------------------------------
 // Randomized fuzz: build varied CSVs (both dialects, plain + quoted fields with
@@ -407,8 +371,9 @@ std::pair<std::vector<usize>, bool> badRowsViaFile(
 )
 {
   static std::atomic<unsigned> counter{ 0 };
-  const std::string path = "/tmp/qwc_venum_" + std::to_string( getpid() ) + "_" +
-                           std::to_string( counter.fetch_add( 1 ) ) + ".csv";
+  const std::string path = "/tmp/qwc_venum_" + std::to_string( getpid() ) +
+                           "_" + std::to_string( counter.fetch_add( 1 ) ) +
+                           ".csv";
   FILE* f = std::fopen( path.c_str(), "wb" );
   if ( !s.empty() ) std::fwrite( s.data(), 1, s.size(), f );
   std::fclose( f );
@@ -431,9 +396,7 @@ void enumCheck( const std::string& s, const CsvDialect& d, usize cap )
 }  // namespace
 
 TEST( ValidateCsvEnumerate, MultipleRaggedRowsAllSeams )
-{
-  enumCheck( "a,b,c\n1,2\nx,y,z\n4,5\n7,8,9\n", rfc(), 1000 );
-}
+{ enumCheck( "a,b,c\n1,2\nx,y,z\n4,5\n7,8,9\n", rfc(), 1000 ); }
 
 TEST( ValidateCsvEnumerate, ScatteredFuzzMatchesReference )
 {
@@ -445,9 +408,11 @@ TEST( ValidateCsvEnumerate, ScatteredFuzzMatchesReference )
     const usize nrec = 5 + rng() % 60;
     std::vector<usize> bad;
     const usize nbad = rng() % 6;
-    for ( usize k = 0; k < nbad; ++k ) bad.push_back( 2 + rng() % ( nrec - 1 ) );
+    for ( usize k = 0; k < nbad; ++k )
+      bad.push_back( 2 + rng() % ( nrec - 1 ) );
     const std::string s = genMultiRagged( rng, d, fields, nrec, bad );
-    const usize cap = ( rng() % 3 ) ? 1000 : ( 1 + rng() % 4 );  // sometimes tiny
+    const usize cap =
+        ( rng() % 3 ) ? 1000 : ( 1 + rng() % 4 );  // sometimes tiny
     const auto want = refBadRows( s, d, cap );
     const usize bpt = bpts[rng() % ( sizeof( bpts ) / sizeof( bpts[0] ) )];
     const auto got = badRowsViaFile( s, d, cap, bpt );
@@ -469,6 +434,4 @@ TEST( ValidateCsvEnumerate, CapTruncatesAtBoundary )
 }
 
 TEST( ValidateCsvEnumerate, EveryRowRagged )
-{
-  enumCheck( "a,b,c\n1\n2,2\n3\n4,4,4,4\n", rfc(), 1000 );
-}
+{ enumCheck( "a,b,c\n1\n2,2\n3\n4,4,4,4\n", rfc(), 1000 ); }
