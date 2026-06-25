@@ -10,7 +10,7 @@ Why is it faster than the above mentioned byte counters? Many reasons, here are 
 ```bash
 qwc --validate-csv --help
 ```
-It's about 5-12x faster than `zsv --validate check --fast`.
+It's about 5-12x faster than `zsv check`.
 
 # Installation
 

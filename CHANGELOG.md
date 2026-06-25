@@ -4,6 +4,32 @@ Notable, user-visible changes to `qwc`. Format follows
 [Keep a Changelog](https://keepachangelog.com); the changelog is hand-curated,
 not generated from commit messages.
 
+## [v0.5.0] - 2026-06-25
+
+### Performance
+
+- Default `--validate-csv` enumeration (the `--all` and `--first` modes) is
+  markedly faster on invalid files. Naming the ragged rows used to re-read the
+  whole file and scan it **serially** with the scalar `collectBadRows` — an
+  "inspection tax" that made default mode *lose* to single-threaded
+  `zsv check` (the ragged cell benched at 0.86×, and a real-world 650 MB pipe
+  file with scattered ragged rows at ~1.35×). The validity pass now retains its
+  per-chunk summaries; reconciliation flags every chunk that contains a
+  violation (with its resolved seam state and a row-number prefix-sum); and the
+  enumerator re-`pread`s **only the flagged chunks**, walking each with a seeded
+  scalar pass **in parallel** across the worker pool and merging the per-chunk
+  lists in argument order under the 1000-row cap. The whole-file second read is
+  gone. On the real-world file that motivated the work (`OCATSDB2F.CSV`,
+  ~650 MB pipe, scattered ragged rows), `qwc --validate-csv --delim='|'` is now
+  **6.04× faster than `zsv check`** (153.6 ms vs 927.6 ms, hyperfine) — up from
+  ~1.35×; on a synthetic 650 MiB density-50 corpus default `--all` lands at
+  **~3.2× vs `zsv`**, up from a 0.86× loss. The gain is parallelization rather
+  than chunk-skipping, so `--all` is still ~4× `--fast` when bad rows are
+  scattered across coarse chunks; closing that residual gap needs a SIMD
+  enumeration kernel, tracked as a follow-up. Driver-only (no SIMD kernel
+  touched), so NEON and AVX2 both have it. The `--fast` and valid-file paths
+  are unchanged. See `benchmarks/README.md` Finding 21.
+
 ## [v0.4.0] - 2026-06-25
 
 ### Added
