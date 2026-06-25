@@ -122,6 +122,90 @@ def run(binary, data, backslash, locale):
     return p.returncode, row
 
 
+def oracle_all(data, delim, quote, esc, quoting, cap=1000):
+    """Like oracle, but enumerates EVERY bad row. Returns (rows, truncated)."""
+    inq = escd = rhc = False
+    delims = row = 0
+    expected = None
+    bad = []
+
+    def flag(r):
+        if len(bad) == cap:
+            return True
+        bad.append(r)
+        return False
+
+    for b in data:
+        if escd:
+            escd = False
+            rhc = True
+            continue
+        if quoting and esc is not None and b == esc:
+            escd = True
+            rhc = True
+            continue
+        if quoting and b == quote:
+            inq = not inq
+            rhc = True
+            continue
+        if not inq and b == delim:
+            delims += 1
+            rhc = True
+            continue
+        if not inq and b == 0x0A:
+            if expected is None:
+                expected = delims
+            elif delims != expected:
+                if flag(row + 1):
+                    return (bad, True)
+            row += 1
+            delims = 0
+            rhc = False
+            continue
+        rhc = True
+    if inq or (rhc and expected is not None and delims != expected):
+        if flag(row + 1):
+            return (bad, True)
+    return (bad, False)
+
+
+def gen_csv_multi(rng, backslash):
+    """A CSV with several scattered ragged rows (row 0 is always the reference)."""
+    fields = rng.randint(2, 5)
+    records = rng.randint(3, 40)
+    bad_set = {rng.randint(1, records - 1) for _ in range(rng.randint(0, 5))}
+    rows = []
+    for r in range(records):
+        fc = fields
+        if r in bad_set:
+            fc = fields - 1 if (fields > 1 and rng.random() < 0.5) else fields + 1
+        rows.append(",".join(rand_field(rng, backslash) for _ in range(fc)))
+    return ("\n".join(rows) + "\n").encode()
+
+
+def run_all(binary, data, backslash, locale):
+    """Run --all; parse "<name>: r1,r2,...[,...]". Returns (rc, rows, truncated)."""
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tf:
+        tf.write(data)
+        tf.flush()
+        args = [binary, "--validate-csv", "--all"]
+        if backslash:
+            args.append("--esc=\\")
+        args.append(tf.name)
+        env = {"LC_ALL": locale, "PATH": "/usr/bin:/bin"}
+        p = subprocess.run(args, capture_output=True, env=env)
+    rows, trunc = [], False
+    if p.returncode == 1:
+        text = p.stdout.decode("utf-8", "replace").strip()
+        if ":" in text:
+            payload = text.rsplit(":", 1)[1].strip()
+            if payload.endswith(",..."):
+                trunc = True
+                payload = payload[:-4]
+            rows = [int(t) for t in payload.split(",") if t.strip()]
+    return p.returncode, rows, trunc
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--qwc", default="./build/qwc")
@@ -150,10 +234,31 @@ def main():
                     if fails > 20:
                         print("too many failures, aborting", file=sys.stderr)
                         return 1
+    # --all multi-row enumeration: the full bad-row list (and the ",..." cap
+    # flag) must match the oracle across both dialects, locales, and binaries.
+    for it in range(args.iters):
+        backslash = bool(it & 1)
+        data = gen_csv_multi(rng, backslash)
+        esc = 0x5C if backslash else None  # '\\'
+        want_rows, want_trunc = oracle_all(data, 0x2C, 0x22, esc, quoting=True)
+        want_rc = 1 if want_rows else 0
+        for binary in binaries:
+            for locale in ("C", "C.UTF-8"):
+                rc, rows, trunc = run_all(binary, data, backslash, locale)
+                if rc != want_rc or rows != want_rows or trunc != want_trunc:
+                    fails += 1
+                    print(f"ALL-MISMATCH it={it} bin={binary} loc={locale} "
+                          f"want=({want_rc},{want_rows},{want_trunc}) "
+                          f"got=({rc},{rows},{trunc})\n  data={data!r}",
+                          file=sys.stderr)
+                    if fails > 20:
+                        print("too many failures, aborting", file=sys.stderr)
+                        return 1
     if fails:
         print(f"{fails} failed", file=sys.stderr)
         return 1
-    print(f"{args.iters} cases x {len(binaries)} binaries x 2 locales: all matched")
+    print(f"{args.iters} cases x {len(binaries)} binaries x 2 locales "
+          f"(--first + --all): all matched")
     return 0
 
 

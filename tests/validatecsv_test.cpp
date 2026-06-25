@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <random>
@@ -369,4 +370,105 @@ TEST( ValidateCsvParallel, BackslashEscapeStressMatchesReference )
             << "it=" << it << " bpt=" << bpt << " s=[" << s << "]";
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Default-mode enumeration: validateCsvBadRows over a file with MULTIPLE bad
+// rows must equal the reference enumeration at every chunk size (the bad-row
+// equivalent of the seamCheck verdict gate).
+// ---------------------------------------------------------------------------
+namespace {
+
+using qwctest::refBadRows;
+
+// A CSV with `nrec` records of `fields` columns and bad rows at the given
+// 1-based positions (each off by +/-1 field). Deterministic given `rng`.
+std::string genMultiRagged(
+    std::mt19937& rng, const CsvDialect& d, usize fields, usize nrec,
+    const std::vector<usize>& badRows
+)
+{
+  std::string out;
+  for ( usize r = 1; r <= nrec; ++r ) {
+    usize fc = fields;
+    if ( std::find( badRows.begin(), badRows.end(), r ) != badRows.end() )
+      fc = ( fields > 1 && ( rng() & 1 ) ) ? fields - 1 : fields + 1;
+    for ( usize c = 0; c < fc; ++c ) {
+      if ( c ) out += d.delim;
+      out += randField( rng, d );
+    }
+    out += '\n';
+  }
+  return out;
+}
+
+std::pair<std::vector<usize>, bool> badRowsViaFile(
+    const std::string& s, const CsvDialect& d, usize cap, usize bpt
+)
+{
+  static std::atomic<unsigned> counter{ 0 };
+  const std::string path = "/tmp/qwc_venum_" + std::to_string( getpid() ) + "_" +
+                           std::to_string( counter.fetch_add( 1 ) ) + ".csv";
+  FILE* f = std::fopen( path.c_str(), "wb" );
+  if ( !s.empty() ) std::fwrite( s.data(), 1, s.size(), f );
+  std::fclose( f );
+  const CsvBadRows br = validateCsvBadRows( path.c_str(), d, cap, bpt );
+  std::remove( path.c_str() );
+  return { br.rows, br.truncated };
+}
+
+void enumCheck( const std::string& s, const CsvDialect& d, usize cap )
+{
+  const auto want = refBadRows( s, d, cap );
+  for ( const usize bpt: { usize{ 1 }, usize{ 2 }, usize{ 3 }, usize{ 5 },
+                           usize{ 8 }, usize{ 16 }, usize{ 64 } } ) {
+    const auto got = badRowsViaFile( s, d, cap, bpt );
+    EXPECT_EQ( got.first, want.first ) << "bpt=" << bpt << " s=[" << s << "]";
+    EXPECT_EQ( got.second, want.second ) << "bpt=" << bpt;
+  }
+}
+
+}  // namespace
+
+TEST( ValidateCsvEnumerate, MultipleRaggedRowsAllSeams )
+{
+  enumCheck( "a,b,c\n1,2\nx,y,z\n4,5\n7,8,9\n", rfc(), 1000 );
+}
+
+TEST( ValidateCsvEnumerate, ScatteredFuzzMatchesReference )
+{
+  std::mt19937 rng( 0xBADC0DE );
+  const usize bpts[] = { 1, 2, 3, 4, 7, 13, 32 };
+  for ( i32 iter = 0; iter < 2000; ++iter ) {
+    const CsvDialect d = ( iter & 1 ) ? bsl() : rfc();
+    const usize fields = 2 + rng() % 4;
+    const usize nrec = 5 + rng() % 60;
+    std::vector<usize> bad;
+    const usize nbad = rng() % 6;
+    for ( usize k = 0; k < nbad; ++k ) bad.push_back( 2 + rng() % ( nrec - 1 ) );
+    const std::string s = genMultiRagged( rng, d, fields, nrec, bad );
+    const usize cap = ( rng() % 3 ) ? 1000 : ( 1 + rng() % 4 );  // sometimes tiny
+    const auto want = refBadRows( s, d, cap );
+    const usize bpt = bpts[rng() % ( sizeof( bpts ) / sizeof( bpts[0] ) )];
+    const auto got = badRowsViaFile( s, d, cap, bpt );
+    ASSERT_EQ( got.first, want.first ) << "iter=" << iter << " bpt=" << bpt;
+    ASSERT_EQ( got.second, want.second ) << "iter=" << iter << " bpt=" << bpt;
+  }
+}
+
+TEST( ValidateCsvEnumerate, UnterminatedQuoteAfterRaggedRows )
+{
+  // rows 2 and 4 ragged, then EOF inside a quote (row 6).
+  enumCheck( "a,b,c\n1,2\nx,y,z\n4,5\n7,8,9\np,\"q\n", rfc(), 1000 );
+}
+
+TEST( ValidateCsvEnumerate, CapTruncatesAtBoundary )
+{
+  // 4 bad rows (2,3,5,6), cap 2 -> first two rows + truncated.
+  enumCheck( "a,b\n1\n2\n3,3\n4\n5\n", rfc(), 2 );
+}
+
+TEST( ValidateCsvEnumerate, EveryRowRagged )
+{
+  enumCheck( "a,b,c\n1\n2,2\n3\n4,4,4,4\n", rfc(), 1000 );
 }

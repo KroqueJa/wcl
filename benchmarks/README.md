@@ -2342,6 +2342,84 @@ chunk-seam stress); `conformance/csv/diff_csv.py --iters 600 --qwc
 safe to include in an x86 release tag. **Port status: AVX2 + NEON +
 portable scalar all shipped; no open ports for validate-csv.**
 
+## Finding 21 — default-mode (`--all`/`--first`) enumeration: flagged-chunk re-walk turns the inspection-tax loss into a 3.2× win
+
+On an **invalid** file, default `--all`/`--first` used to re-read the whole
+file and scan it **serially** with the scalar `collectBadRows` to name every
+ragged row — the "inspection tax". That made default mode *lose* to
+single-threaded `zsv check`: Finding 18 measured `ragged` default at 0.86×, and
+a real-world 650 MB pipe file with scattered ragged rows benched at ~1.35×.
+This finding ships the fix (spec
+`2026-06-25-validate-csv-default-mode-enumeration`): the validity pass now
+retains its per-chunk summaries; `reconcileAndFlag` flags every chunk that
+contains a violation (with its resolved seam state + a row-number prefix-sum);
+and `enumerateFlagged` re-`pread`s **only the flagged chunks** and walks each
+with a *seeded* `collectBadRowsSeeded`, **in parallel** across a worker pool,
+merging the per-chunk lists in order under the 1000-row cap. Driver-only — no
+SIMD kernel touched, so NEON + AVX2 land together.
+
+**Box.** Apple Silicon (this project's third box), macOS 26.5.1 arm64,
+clang/AppleClang, `cmake -DCMAKE_BUILD_TYPE=Release`. Warm page cache,
+page-cache-resident ~650 MiB corpora from `gen-csv.py --ragged-density 50`
+(comma and pipe) plus `ragged-everywhere`; `bench-csv.py --runs 11` (median
+wall). Delimiter passed to qwc as `--delim=<c>` and to zsv as `-O <c>`. zsv
+1.4.x `check --parser fast`.
+
+| corpus (~650 MiB)   | `--all` | `--first` | `--fast` | zsv      | all/zsv | fast/zsv |
+| ------------------- | ------- | --------- | -------- | -------- | ------- | -------- |
+| `ragged x50` (comma)| 147.3   | 88.8      | 36.6     | 492.8    | **3.35×** | 13.47× |
+| `ragged x50` (pipe) | 152.5   | 90.3      | 37.1     | 484.7    | **3.18×** | 13.06× |
+| `ragged-everywhere` | 52.9    | 53.0      | 39.3     | 1675.3   | 31.65×  | 42.59×   |
+
+**Headline: default `--all` now beats `zsv` by ~3.2× on the sparse-ragged
+650 MiB file** — up from the documented 0.86× / ~1.35× *loss*, a ~5× speedup
+over the prior default-mode behaviour. The real-world problem (a 650 MB pipe
+file with many scattered ragged rows that benched at 1.35×) is solved.
+
+**Real-world confirmation.** On the actual file that started the investigation
+(`OCATSDB2F.CSV`, ~650 MB pipe), `hyperfine --warmup 5 -i`:
+`qwc --validate-csv --delim='|'` **153.6 ms ± 2.3** vs `zsv check` **927.6 ms ±
+2.1** = **6.04× faster**. qwc's wall time matches the synthetic cell (~153 ms);
+the ratio is higher than the synthetic 3.2× only because `zsv` is ~2× slower on
+this file's shape (928 ms vs the synthetic 485 ms). qwc's `[User 484 ms / System
+191 ms]` over 154 ms wall confirms the enumeration is running ~4-wide parallel.
+
+**The win is parallelization, not chunk-skipping — and that bounds it.** The
+spec's aspirational bar was "default `--all` within ~20% of `--fast`". **That
+bar is not met:** `--all` is ~4× `--fast` (147 vs 37 ms). Mechanism, measured:
+at the default 64 MiB `bytesPerThread`, 650 MiB is only ~11 chunks, and 50
+*evenly scattered* bad rows land ~4–5 per chunk, so **every chunk is flagged**.
+H1 ("re-walk only flagged chunks") therefore skips nothing here — the whole
+file is re-walked — and the gain comes entirely from **H2** parallelizing what
+was a serial scalar scan. The residual gap to `--fast` is the scalar
+`collectBadRowsSeeded` walk (~500 MB/s/core) being ~4× slower than the SIMD
+validity pass over the same bytes. Closing it needs a **SIMD enumeration
+kernel** (the validity kernels emit per-chunk summaries, not per-row positions),
+which the spec kept out of scope; this is filed as a `## Next` follow-up. H1's
+chunk-skipping *does* pay when raggedness is **concentrated** in a few chunks
+(few flags → `--all` approaches `--fast`); the scattered-at-coarse-chunks shape
+benchmarked here is its worst case and still wins 3.2×.
+
+**`ragged-everywhere` (31.65×)** is dominated by zsv printing every anomaly
+(1.7 s) while qwc `--all` caps output at 1000 rows; treat the H2 signal there as
+qwc-`--all` (52.9 ms, fully parallel) vs the prior serial whole-file scan, not
+as a faithful zsv ratio. The valid/`--fast` cells are unchanged from Finding 20
+(unquoted 12.7×, sprinkled 7.6×, heavy 5.9×, ragged `--fast` 13.3×).
+
+**Correctness.** The whole change is gated by a `bytesPerThread`-sweep
+equivalence test: for any chunking, the parallel flagged-chunk enumeration must
+produce the **identical** bad-row list (values, order, `,...` truncation) as the
+serial whole-file `collectBadRows`. That sweep caught the one real bug en route
+— `collectBadRowsSeeded`'s end-of-buffer tail check (ragged-final / unterminated
+quote) must fire only at the *true* EOF, not at a chunk boundary where the
+trailing partial record continues into the next chunk (an `atEof` flag). 2000+
+scattered-ragged fuzz iters × both dialects × swept chunk sizes,
+`conformance/csv/diff_csv.py` (`--first` + `--all`, 400 cases × {NEON, scalar} ×
+{C, C.UTF-8}) all matched, and the parallel enumeration is ThreadSanitizer-clean.
+
+**Port status: unchanged — driver-only, both ISAs shipped together.** The open
+follow-up is the SIMD enumeration kernel to close the `--all`→`--fast` gap.
+
 ## Reproducing
 
 The per-core sweep uses a throwaway harness that `#include`s the kernel headers

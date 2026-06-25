@@ -68,6 +68,21 @@ i32 validateCsv(
     usize bytesPerThread = 64ull * 1024 * 1024
 );
 
+// The enumerated ragged rows of one input: ascending 1-based row numbers (up to
+// the requested `cap`) and `truncated` = "more than cap bad rows exist". For a
+// valid input `rows` is empty. This is the parallel default-mode (--all/--first)
+// inspection; tests pass a small `bytesPerThread` to force chunk seams.
+struct CsvBadRows
+{
+  std::vector<usize> rows;
+  bool truncated = false;
+};
+
+CsvBadRows validateCsvBadRows(
+    const char* filename, const CsvDialect& d, usize cap,
+    usize bytesPerThread = 64ull * 1024 * 1024
+);
+
 // Validate every file in `files` (empty = standard input) per `mode`, each
 // using its own internal chunk-parallelism, printing one report line per
 // invalid file in argument order. Returns 1 if any file is invalid, else 0; in

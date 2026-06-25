@@ -285,6 +285,62 @@ inline CsvVerdict refValidateCsv( const std::string& s, const CsvDialect& d )
   return { true, 0 };
 }
 
+// Reference enumeration of ALL bad rows (mirror of refValidateCsv, but it does
+// not stop at the first mismatch). Returns up to `cap` ascending 1-based row
+// numbers and a `truncated` flag (more than `cap` bad rows exist). This is the
+// oracle the parallel flagged-chunk enumeration must match for any chunking.
+inline std::pair<std::vector<usize>, bool> refBadRows(
+    const std::string& s, const CsvDialect& d, usize cap )
+{
+  std::vector<usize> bad;
+  bool inQuotes = false, escaped = false, recordHasContent = false;
+  bool haveExpected = false;
+  usize delims = 0, row = 0, expected = 0;
+  for ( usize i = 0; i < s.size(); ++i ) {
+    const auto c = static_cast<unsigned char>( s[i] );
+    if ( escaped ) {
+      escaped = false;
+      recordHasContent = true;
+      continue;
+    }
+    if ( d.quoting && d.backslashEsc &&
+         c == static_cast<unsigned char>( d.esc ) ) {
+      escaped = true;
+      recordHasContent = true;
+      continue;
+    }
+    if ( d.quoting && c == static_cast<unsigned char>( d.quote ) ) {
+      inQuotes = !inQuotes;
+      recordHasContent = true;
+      continue;
+    }
+    if ( !inQuotes && c == static_cast<unsigned char>( d.delim ) ) {
+      ++delims;
+      recordHasContent = true;
+      continue;
+    }
+    if ( !inQuotes && c == '\n' ) {
+      if ( !haveExpected ) {
+        haveExpected = true;
+        expected = delims;
+      } else if ( delims != expected ) {
+        if ( bad.size() == cap ) return { bad, true };
+        bad.push_back( row + 1 );
+      }
+      ++row;
+      delims = 0;
+      recordHasContent = false;
+      continue;
+    }
+    recordHasContent = true;
+  }
+  if ( inQuotes || ( recordHasContent && haveExpected && delims != expected ) ) {
+    if ( bad.size() == cap ) return { bad, true };
+    bad.push_back( row + 1 );
+  }
+  return { bad, false };
+}
+
 // Run `maxLineLen` over a whole string in one shot. The answer is the longest
 // newline-terminated line; the trailing open run (`ls.cur`) is dropped.
 inline usize maxLineLenStr( const std::string& s )
