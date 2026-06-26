@@ -1,0 +1,19 @@
+# Valgrind suppressions for the .github/workflows/valgrind.yml memcheck gate.
+#
+# Intentionally empty to start. Suppressions are grown EMPIRICALLY from the
+# first real CI run's output rather than guessed up front -- guessing risks
+# masking a genuine leak. When valgrind reports a known one-time libstdc++ /
+# glibc internal allocation (e.g. locale/iostream init, dynamic-loader buffers)
+# that is NOT a qwc leak, copy the `{ ... }` block valgrind prints with
+# `--gen-suppressions=all` into this file, give it a descriptive name, and
+# narrow it to the library frame so it can't hide a real qwc-side leak.
+#
+# Example shape (do not enable until observed in CI):
+#
+# {
+#    libstdc++-locale-init-once
+#    Memcheck:Leak
+#    match-leak-kinds: reachable
+#    ...
+#    obj:*/libstdc++.so.*
+# }

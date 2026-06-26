@@ -1,0 +1,123 @@
+# Valgrind memcheck leak gate for qwc.
+#
+# An orthogonal leak signal to the per-push ASan+UBSan job in analysis.yml --
+# NOT a replacement for it. ASan shares a shadow-memory model with the program
+# and intercepts certain glibc paths; valgrind runs the unmodified binary on its
+# own emulated CPU and catches a different slice (notably the exception-unwind
+# leak paths in walkDir / printResults that GCC 16's -fanalyzer flagged but an
+# ASan run will not exercise without fault-injecting OOM).
+#
+# Trigger is event-driven, NOT a time cron. A leak check is deterministic --
+# same commit + same inputs => same result -- so re-running it on a schedule
+# against an unchanged main yields no new signal. The moment that *does* tell us
+# something new is when the shipped code changes, i.e. a release tag. So we run
+# on v* tags (validating the exact commit users download, in parallel with
+# release.yml -- a separate workflow, so it never blocks the publish) plus
+# workflow_dispatch for ad-hoc runs.
+#
+# Scope is a focused smoke, not the full conformance corpus: valgrind's 10-30x
+# slowdown makes per-process fan-out impractical, and the leak paths we care
+# about (fd/syscall handling, directory walks, error-exit unwinding) are hit by
+# a handful of representative invocations rather than by input variety.
+#
+# Build is Debug on purpose: the post-binary-size CMake gate puts -fno-exceptions
+# on Release only, and the whole point here is the exception-unwind paths -- so
+# we need a build that still has exceptions and unwinding enabled.
+
+name: valgrind
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: valgrind-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  memcheck:
+    name: valgrind memcheck (leak + fd)
+    runs-on: ubuntu-latest
+    env:
+      QWC: ./build/qwc
+      # --leak-check=full: report every definitely/indirectly-lost block with a
+      #   stack. --error-exitcode=1: any finding fails the step. --track-fds=yes:
+      #   flag leaked file descriptors (walkDir opens DIR*/fds under exceptions).
+      #   --errors-for-leak-kinds=definite,indirect: "possibly lost" is dominated
+      #   by one-time library internals, so gate only on real leaks. The
+      #   suppressions file masks known libstdc++/glibc one-time allocations.
+      VALGRIND: >-
+        valgrind --error-exitcode=1 --leak-check=full --track-fds=yes
+        --errors-for-leak-kinds=definite,indirect
+        --suppressions=.github/valgrind.supp
+    steps:
+      - uses: actions/checkout@v4  # no submodules: tests are off for this gate
+
+      - name: Install valgrind
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
+
+      - name: Build qwc (Debug, exceptions enabled)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DQWC_BUILD_TESTS=OFF
+          cmake --build build --target qwc -j
+
+      - name: Make a small fixture tree (for the multi-file + --recursive smoke)
+        run: |
+          mkdir -p fixtures/sub
+          printf 'one two three\nfour five\n'      > fixtures/a.txt
+          printf 'no trailing newline'             > fixtures/b.txt
+          printf ''                                > fixtures/empty.txt
+          printf 'caf\xc3\xa9 na\xc3\xafve\n'      > fixtures/utf8.txt   # multibyte
+          printf 'deep\nfile\n'                    > fixtures/sub/c.txt
+          printf 'a,b,c\n1,2,3\n4,5,6\n'           > fixtures/data.csv
+          printf 'x|y|z\n1|2|3\n'                  > fixtures/pipe.csv
+
+      # Each invocation is a separate valgrind run so a leak is attributed to the
+      # exact code path. --error-exitcode=1 turns any finding into a step
+      # failure; `set -e` then stops at the first one.
+      - name: Valgrind smoke (count paths)
+        run: |
+          set -e
+          # default -lwc bundle, multi-file (exercises printResults aggregation)
+          $VALGRIND $QWC fixtures/a.txt fixtures/b.txt fixtures/utf8.txt
+          # individual flag bundles
+          $VALGRIND $QWC -l fixtures/a.txt
+          $VALGRIND $QWC -lw fixtures/utf8.txt
+          $VALGRIND $QWC -c fixtures/empty.txt
+          # stdin path
+          $VALGRIND $QWC < fixtures/a.txt
+
+      - name: Valgrind smoke (recursive walkDir)
+        run: |
+          set -e
+          # the directory-tree walk: DIR*/fd handling + heap growth under
+          # exceptions -- the path GCC -fanalyzer flagged.
+          $VALGRIND $QWC -r fixtures
+          $VALGRIND $QWC --recursive --top 3 fixtures
+
+      - name: Valgrind smoke (error-exit unwind path)
+        run: |
+          set -e
+          # A missing file makes qwc exit non-zero *by design*, which valgrind
+          # passes straight through -- so the exit code can't tell a real leak
+          # apart from qwc's intended failure. Assert on valgrind's own error
+          # summary instead: any non-zero error count (leaks count, via
+          # --errors-for-leak-kinds) fails the step; qwc's exit is irrelevant.
+          check_clean() {
+            local log="$1"; shift
+            $VALGRIND --log-file="$log" "$@" || true   # ignore qwc's own exit
+            if ! grep -q 'ERROR SUMMARY: 0 errors' "$log"; then
+              echo "::error::valgrind reported findings on the error-exit path"
+              cat "$log"
+              exit 1
+            fi
+          }
+          check_clean vg-missing-file.log $QWC fixtures/a.txt /no/such/file.txt
+          check_clean vg-missing-dir.log  $QWC -r /no/such/dir
+
+      - name: Valgrind smoke (--validate-csv)
+        run: |
+          set -e
+          $VALGRIND $QWC --validate-csv --all fixtures/data.csv
+          $VALGRIND $QWC --validate-csv '--delim=|' --all fixtures/pipe.csv
